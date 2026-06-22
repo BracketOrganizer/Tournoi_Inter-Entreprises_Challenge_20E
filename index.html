@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0f4a1f">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚽</text></svg>">
-<title>⚽ Foot Entreprises Challenge</title>
+<title>⚽ Foot Entreprises Challenge — 20 équipes</title>
 <link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;600;700;900&family=Oswald:wght@400;500;600;700&display=swap" rel="stylesheet">
 
 <!-- ══════════════════════════════════════════════════════════
@@ -30,13 +30,12 @@ import { getFirestore, doc, getDoc, getDocs, setDoc, deleteDoc, onSnapshot, coll
                                     from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCjyPfCjKvSVFUp8dyF0bjbXwuDIukGu2c",
-  authDomain: "tournoi-foot-inter-entreprises.firebaseapp.com",
-  projectId: "tournoi-foot-inter-entreprises",
-  storageBucket: "tournoi-foot-inter-entreprises.firebasestorage.app",
-  messagingSenderId: "995068678625",
-  appId: "1:995068678625:web:f533d4a231791369f802a0",
-  measurementId: "G-5HTHD0H2XV"
+  apiKey: "AIzaSyAa-It1GI_9KTAvQKzkLWNANv91QnZar04",
+  authDomain: "tournoi-foot-entreprises.firebaseapp.com",
+  projectId: "tournoi-foot-entreprises",
+  storageBucket: "tournoi-foot-entreprises.firebasestorage.app",
+  messagingSenderId: "894506578702",
+  appId: "1:894506578702:web:0000000000000000000000"
 };
 // ⚠️ Remplacez les valeurs ci-dessus par celles de VOTRE projet Firebase
 // (créez un nouveau projet Firebase dédié à ce tournoi de foot, distinct du pickleball)
@@ -47,8 +46,11 @@ const db        = getFirestore(app);
 const gProvider = new GoogleAuthProvider();
 
 // ══════════════════════════════════════════════════════════
-// ÉTAT GLOBAL — Foot Entreprises (24 équipes, 4 poules de 6)
-// Rôles : 'admin' | 'scorer' | 'spectator'
+// ÉTAT GLOBAL — Foot Entreprises (20 équipes, 4 poules de 5, 3 phases)
+// Phase 1 : 4 poules A,B,C,D (5 équipes, round-robin)
+// Phase 2 : 4 groupes W,X,Y,Z (5 équipes recomposées selon classement Phase 1, round-robin)
+// Phase Finale : matchs de classement directs (places 1-2 à 19-20), pas d'élimination
+// Rôles : 'admin' | 'scorer' | 'manager' | 'spectator'
 // ══════════════════════════════════════════════════════════
 let CURRENT_USER = null;
 let USER_ROLE    = null;
@@ -58,31 +60,38 @@ let unsubRoster = null;
 
 const ST = {
   page:1, prevPage:1, rulesOpen:false,
-  teams:[],        // [{id,name,club,licence,lv}]  -- 24 équipes d'entreprises
-  pools:{A:[],B:[],C:[],D:[]}, // ids d'équipes par poule
-  poolSchedule:[], // matchs de phase de poules [{m,pool,a,b,time,court}]
-  poolTabSlot:null,    // créneau "TAB possible" réservé en fin de phase de poules {time,slot}
-  poolBreaks:[],        // coupures réellement insérées pendant les poules [{afterSlot,startTime,endTime,label,duration}]
-  bracketSchedule:[], // matchs phase finale [{m,time,court}]
-  bracketTabSlots:[],  // créneaux "TAB possible" après chaque tour [{round,slot,time}]
-  bracketBreaks:[],     // coupures réellement insérées pendant la phase finale
-  results:{},      // clé "pool-M" ou "bracket-M" -> {ga,gb,shootout:{ga,gb}}
-  activeView:'pools', // 'pools' | 'bracket'
+  teams:[],        // [{id,name,club,licence,lv}]  -- 20 équipes d'entreprises
+  pools:{A:[],B:[],C:[],D:[]}, // ids d'équipes par poule (Phase 1)
+  poolSchedule:[], // matchs de phase 1 [{matchId,pool,a,b,time,court,slot}]
+  poolTabSlot:null,    // créneau "TAB possible" réservé en fin de phase 1 {time,slot}
+  poolBreaks:[],        // coupures réellement insérées pendant la phase 1
+
+  groups:{W:[],X:[],Y:[],Z:[]}, // ids d'équipes par groupe (Phase 2, recomposés)
+  groupSchedule:[], // matchs de phase 2 [{matchId,group,a,b,time,court,slot}]
+  groupTabSlot:null,    // créneau "TAB possible" réservé en fin de phase 2
+  groupBreaks:[],        // coupures réellement insérées pendant la phase 2
+
+  classementSchedule:[], // matchs de classement final [{matchId,placeLabel,a,b,time,court,slot}]
+  classementTabSlots:[], // créneaux "TAB possible" en phase finale
+  classementBreaks:[],   // coupures réellement insérées pendant la phase finale
+
+  results:{},      // clé "pool-M"/"group-M"/"classement-M" -> {ga,gb,shootout:{ga,gb}}
+  activeView:'pools', // 'pools' | 'groups' | 'classement'
   activePoolRound:0,
-  activeBracketRound:1, // 1,2,3
+  activeGroupRound:0,
   liveOpen:false,
-  phase:'pools',   // 'pools' | 'bracket' | 'done'
+  phase:'pools',   // 'pools' | 'groups' | 'classement' | 'done'
   timerSec:0, timerRun:false, timerMode:'match', timerIv:null,
   cfg:{
-    n:24,
+    n:20,
     courts:4,            // nombre de terrains
-    matchDur:12,          // durée match (min) - poules
-    matchDurBracket:12,   // durée match phase finale (min)
+    matchDur:13,          // durée match (min) — phases 1 & 2 (Article 6/7 : 13 min)
+    matchDurClassement:13,// durée match phase finale (min) — Article 7 bis : 13 min
     tt:4,                 // transition entre matchs (min)
     start:'09:00',
     // Coupures multiples (déjeuner, pauses...) : chacune démarre à la fin du
     // créneau en cours le plus proche de l'heure visée (jamais en plein milieu
-    // d'un créneau), peu importe qu'on soit en phase de poules ou en finale.
+    // d'un créneau), peu importe la phase en cours.
     breaks:[ { time:'12:00', duration:45, label:'Pause déjeuner' } ],
     tabDuration:10,        // durée allouée à un créneau T.A.B. (minutes), réglable
     draw:'order'           // 'order' | 'random' | 'random-no-club'
@@ -177,66 +186,33 @@ function appliedBreaksFromSchedule(existingTimes, breaks){
   return applied;
 }
 // ══════════════════════════════════════════════════════════
-// ARBRE PHASE FINALE — 24 équipes, 4 poules de 6 (A,B,C,D)
-// Format exact selon le règlement officiel.
+// PHASE FINALE — Matchs de classement directs (PAS d'élimination)
+// Basés sur le rang final de chaque équipe dans son groupe W,X,Y,Z (Phase 2).
+// Format officiel (cf. planning) :
+//   W vs X : 1er-1er → Finale (1-2e place) ; 2e-2e → 3-4e ; 3e-3e → 5-6e ;
+//            4e-4e → 7-8e ; 5e-5e → 9-10e
+//   Y vs Z : 1er-1er → 11-12e ; 2e-2e → 13-14e ; 3e-3e → 15-16e ;
+//            4e-4e → 17-18e ; 5e-5e → 19-20e
+// La finale (1-2e place) se joue SEULE sur le terrain A, après tous les
+// autres matchs de classement (qui se jouent en parallèle sur les 4 terrains).
 // ══════════════════════════════════════════════════════════
-
-// TOUR 1 (M1-M12) : croisements entre poules par rang de classement
-const BRACKET_ROUND1 = [
-  { m:1,  a:{rank:5,pool:'A'}, b:{rank:6,pool:'C'} },
-  { m:2,  a:{rank:5,pool:'B'}, b:{rank:6,pool:'D'} },
-  { m:3,  a:{rank:5,pool:'C'}, b:{rank:6,pool:'B'} },
-  { m:4,  a:{rank:5,pool:'D'}, b:{rank:6,pool:'A'} },
-  { m:5,  a:{rank:3,pool:'A'}, b:{rank:4,pool:'C'} },
-  { m:6,  a:{rank:3,pool:'B'}, b:{rank:4,pool:'D'} },
-  { m:7,  a:{rank:3,pool:'C'}, b:{rank:4,pool:'B'} },
-  { m:8,  a:{rank:3,pool:'D'}, b:{rank:4,pool:'A'} },
-  { m:9,  a:{rank:1,pool:'A'}, b:{rank:2,pool:'C'} },
-  { m:10, a:{rank:1,pool:'B'}, b:{rank:2,pool:'D'} },
-  { m:11, a:{rank:1,pool:'C'}, b:{rank:2,pool:'B'} },
-  { m:12, a:{rank:1,pool:'D'}, b:{rank:2,pool:'A'} },
+const CLASSEMENT_MATCHES = [
+  { cm:1, label:'9e - 10e place',  groupA:'W', rankA:5, groupB:'X', rankB:5 },
+  { cm:2, label:'7e - 8e place',   groupA:'W', rankA:4, groupB:'X', rankB:4 },
+  { cm:3, label:'5e - 6e place',   groupA:'W', rankA:3, groupB:'X', rankB:3 },
+  { cm:4, label:'3e - 4e place',   groupA:'W', rankA:2, groupB:'X', rankB:2 },
+  { cm:5, label:'19e - 20e place', groupA:'Y', rankA:5, groupB:'Z', rankB:5 },
+  { cm:6, label:'17e - 18e place', groupA:'Y', rankA:4, groupB:'Z', rankB:4 },
+  { cm:7, label:'15e - 16e place', groupA:'Y', rankA:3, groupB:'Z', rankB:3 },
+  { cm:8, label:'13e - 14e place', groupA:'Y', rankA:2, groupB:'Z', rankB:2 },
+  { cm:9, label:'11e - 12e place', groupA:'Y', rankA:1, groupB:'Z', rankB:1 },
+  { cm:10, label:'Finale (1ere - 2e place)', groupA:'W', rankA:1, groupB:'X', rankB:1, isFinal:true },
 ];
-
-// TOUR 2 (M13-M24) : Vainqueurs / Perdants du tour 1
-const BRACKET_ROUND2 = [
-  { m:13, a:{from:'V',m:1},  b:{from:'V',m:2} },
-  { m:14, a:{from:'V',m:3},  b:{from:'V',m:4} },
-  { m:15, a:{from:'P',m:1},  b:{from:'P',m:2} },
-  { m:16, a:{from:'P',m:3},  b:{from:'P',m:4} },
-  { m:17, a:{from:'V',m:5},  b:{from:'V',m:6} },
-  { m:18, a:{from:'V',m:7},  b:{from:'V',m:8} },
-  { m:19, a:{from:'P',m:5},  b:{from:'P',m:6} },
-  { m:20, a:{from:'P',m:7},  b:{from:'P',m:8} },
-  { m:21, a:{from:'V',m:9},  b:{from:'V',m:10} },
-  { m:22, a:{from:'V',m:11}, b:{from:'V',m:12} },
-  { m:23, a:{from:'P',m:9},  b:{from:'P',m:10} },
-  { m:24, a:{from:'P',m:11}, b:{from:'P',m:12} },
-];
-
-// TOUR 3 (M25-M36) : classement final, places 1 à 24
-const BRACKET_ROUND3 = [
-  { m:25, label:'23e - 24e place', a:{from:'P',m:15}, b:{from:'P',m:16} },
-  { m:26, label:'21e - 22e place', a:{from:'V',m:15}, b:{from:'V',m:16} },
-  { m:27, label:'19e - 20e place', a:{from:'P',m:13}, b:{from:'P',m:14} },
-  { m:28, label:'17e - 18e place', a:{from:'V',m:13}, b:{from:'V',m:14} },
-  { m:29, label:'15e - 16e place', a:{from:'P',m:19}, b:{from:'P',m:20} },
-  { m:30, label:'13e - 14e place', a:{from:'V',m:19}, b:{from:'V',m:20} },
-  { m:31, label:'11e - 12e place', a:{from:'P',m:17}, b:{from:'P',m:18} },
-  { m:32, label:'9e - 10e place',  a:{from:'V',m:17}, b:{from:'V',m:18} },
-  { m:33, label:'7e - 8e place',   a:{from:'P',m:23}, b:{from:'P',m:24} },
-  { m:34, label:'5e - 6e place',   a:{from:'V',m:23}, b:{from:'V',m:24} },
-  { m:35, label:'3e - 4e place',   a:{from:'P',m:21}, b:{from:'P',m:22} },
-  { m:36, label:'Finale (1ere - 2e place)', a:{from:'V',m:21}, b:{from:'V',m:22} },
-];
-
-const BRACKET_ALL = [...BRACKET_ROUND1, ...BRACKET_ROUND2, ...BRACKET_ROUND3];
-const BRACKET_BY_NUM = {}; BRACKET_ALL.forEach(b=>BRACKET_BY_NUM[b.m]=b);
-
-function bracketRoundOf(m){ if(m<=12) return 1; if(m<=24) return 2; return 3; }
-function bracketLabel(m){
-  const b=BRACKET_BY_NUM[m];
-  if(b && b.label) return b.label;
-  return 'Match '+m;
+const CLASSEMENT_BY_NUM = {}; CLASSEMENT_MATCHES.forEach(c=>CLASSEMENT_BY_NUM[c.cm]=c);
+function classementLabel(cm){ const c=CLASSEMENT_BY_NUM[cm]; return c?c.label:'Match '+cm; }
+function classementTeam(cm, side){
+  const c = CLASSEMENT_BY_NUM[cm]; if(!c) return null;
+  return side==='a' ? groupRankTeam(c.groupA, c.rankA) : groupRankTeam(c.groupB, c.rankB);
 }
 
 // ══════════════════════════════════════════════════════════
@@ -248,10 +224,11 @@ async function getUserProfile(uid){
     if(snap.exists()){
       const d = snap.data();
       // Un compte 'manager' n'est valide ICI que s'il a été créé pour CE
-      // tournoi (tournament === 'foot24'). Un manager de l'app 20 équipes
+      // tournoi (tournament === 'foot20'). Un manager de l'app 24 équipes
       // (même projet Firebase, même collection 'users') doit être traité
-      // comme un simple spectateur sur cette app.
-      if(d.role==='manager' && d.tournament!=='foot24'){
+      // comme un simple spectateur sur cette app, pas comme un manager
+      // avec un teamId qui ne correspondrait à aucune équipe ici.
+      if(d.role==='manager' && d.tournament!=='foot20'){
         return { role:'spectator', teamId:null };
       }
       return { role: d.role || 'spectator', teamId: d.teamId || null };
@@ -290,7 +267,7 @@ onAuthStateChanged(auth, async (user)=>{
     MANAGER_TEAM_ID = profile.teamId;
     if(USER_ROLE === 'spectator'){
       try {
-        const snap = await getDoc(doc(db,'foottournoi','current'));
+        const snap = await getDoc(doc(db,'foottournoi20','current'));
         ST.liveOpen = snap.exists() ? snap.data().liveOpen === true : false;
       } catch(e){ ST.liveOpen = false; }
       if(!ST.liveOpen){
@@ -308,7 +285,7 @@ onAuthStateChanged(auth, async (user)=>{
     CURRENT_USER = null; USER_ROLE = null; MANAGER_TEAM_ID = null;
     unsubAll();
     try {
-      const snap = await getDoc(doc(db,'foottournoi','current'));
+      const snap = await getDoc(doc(db,'foottournoi20','current'));
       if(snap.exists()) ST.liveOpen = snap.data().liveOpen === true;
     } catch(e){}
     showLogin();
@@ -377,7 +354,7 @@ window.enterLiveModeAndGo = function(target){
 // PERSISTANCE FIRESTORE — doc unique 'foottournoi/current'
 // ══════════════════════════════════════════════════════════
 function subscribeToTournament(){
-  unsubTournament = onSnapshot(doc(db,'foottournoi','current'), (snap)=>{
+  unsubTournament = onSnapshot(doc(db,'foottournoi20','current'), (snap)=>{
     if(!snap.exists()) return;
     const data=snap.data();
     if(data.cfg)             ST.cfg             = data.cfg;
@@ -386,9 +363,13 @@ function subscribeToTournament(){
     if(data.poolSchedule)    ST.poolSchedule    = data.poolSchedule;
     ST.poolTabSlot      = data.poolTabSlot || null;
     ST.poolBreaks       = data.poolBreaks || [];
-    if(data.bracketSchedule) ST.bracketSchedule = data.bracketSchedule;
-    ST.bracketTabSlots  = data.bracketTabSlots || [];
-    ST.bracketBreaks    = data.bracketBreaks || [];
+    if(data.groups)          ST.groups          = data.groups;
+    if(data.groupSchedule)   ST.groupSchedule   = data.groupSchedule;
+    ST.groupTabSlot     = data.groupTabSlot || null;
+    ST.groupBreaks      = data.groupBreaks || [];
+    if(data.classementSchedule) ST.classementSchedule = data.classementSchedule;
+    ST.classementTabSlots = data.classementTabSlots || [];
+    ST.classementBreaks   = data.classementBreaks || [];
     if(data.results)         ST.results         = data.results;
     if(data.phase)           ST.phase           = data.phase;
     ST.liveOpen = data.liveOpen === true;
@@ -397,7 +378,7 @@ function subscribeToTournament(){
 }
 async function saveTournament(partial){
   if(!isAdmin() && !isScorer()) return;
-  try { await setDoc(doc(db,'foottournoi','current'), { ...partial, updatedAt: serverTimestamp() }, { merge:true }); }
+  try { await setDoc(doc(db,'foottournoi20','current'), { ...partial, updatedAt: serverTimestamp() }, { merge:true }); }
   catch(e){ console.error('saveTournament', e); alert('Erreur de sauvegarde : '+e.message); }
 }
 function refreshCurrentPage(){
@@ -408,6 +389,7 @@ function refreshCurrentPage(){
   if(ST.page==='T') renderTeamsSpecPage();
   if(ST.page==='M') renderManagerPage();
 }
+
 
 // ══════════════════════════════════════════════════════════
 // FEUILLES D'ÉQUIPE (ROSTERS) — sous-collection 'teamRosters/{teamId}'
@@ -421,7 +403,7 @@ const MAX_PLAYERS = 10;
 function subscribeToRoster(teamId){
   if(unsubRoster){ unsubRoster(); unsubRoster=null; }
   if(!teamId) return;
-  unsubRoster = onSnapshot(doc(db,'teamRosters',teamId), (snap)=>{
+  unsubRoster = onSnapshot(doc(db,'teamRosters20',teamId), (snap)=>{
     ROSTERS[teamId] = snap.exists() ? snap.data() : { players: [] };
     if(ST.page==='M') renderManagerPage();
   }, (e)=>{ console.error('subscribeToRoster', e); });
@@ -430,7 +412,7 @@ function subscribeToRoster(teamId){
 async function getRosterOnce(teamId){
   if(ROSTERS[teamId]) return ROSTERS[teamId];
   try {
-    const snap = await getDoc(doc(db,'teamRosters',teamId));
+    const snap = await getDoc(doc(db,'teamRosters20',teamId));
     const data = snap.exists() ? snap.data() : { players: [] };
     ROSTERS[teamId] = data;
     return data;
@@ -448,7 +430,7 @@ function emptyPlayer(){ return { nom:'', prenom:'', licence:'' }; }
 async function saveRoster(teamId, players){
   if(!isAdmin() && !isScorer() && !(isManager() && MANAGER_TEAM_ID===teamId)) return;
   try {
-    await setDoc(doc(db,'teamRosters',teamId), { players, updatedAt: serverTimestamp() }, { merge:true });
+    await setDoc(doc(db,'teamRosters20',teamId), { players, updatedAt: serverTimestamp() }, { merge:true });
     ROSTERS[teamId] = { players };
   } catch(e){
     console.error('saveRoster', e);
@@ -461,7 +443,7 @@ async function saveRoster(teamId, players){
 // ══════════════════════════════════════════════════════════
 window.drawPools = function(){
   if(!isAdmin()) return;
-  const n = ST.cfg.n||24;
+  const n = ST.cfg.n||20;
   const teams = ST.teams.slice(0,n);
   if(teams.length < 8){ alert('Il faut au moins 8 équipes pour former 4 poules.'); return; }
   const numPools = 4;
@@ -518,7 +500,7 @@ function tClub(id){ const t=tObj(id); return t?(t.club||'—'):'—'; }
 // affronte une fois les 5 autres de sa poule = 5 journées x 3 matchs/poule)
 // ══════════════════════════════════════════════════════════
 function roundRobinPairs(ids){
-  // Algorithme du "cercle" pour round-robin à 6 équipes (5 journées, 3 matchs/journée)
+  // Algorithme du "cercle" pour round-robin (n équipes, n-1 journées si pair, sinon n journées avec 1 bye)
   const n = ids.length;
   const list = [...ids];
   if(n%2===1) list.push(null); // bye si impair
@@ -544,7 +526,7 @@ window.buildPoolSchedule = function(){
   const cfg = ST.cfg;
   const courts = cfg.courts||4;
 
-  // Pour chaque poule, calendrier round-robin (5 journées de 3 matchs)
+  // Pour chaque poule, calendrier round-robin
   const poolRounds = {}; // {A:[[...pairs...] x5], B:..., C:..., D:...}
   ['A','B','C','D'].forEach(p=>{ poolRounds[p] = roundRobinPairs(pools[p]); });
 
@@ -580,7 +562,7 @@ window.buildPoolSchedule = function(){
       slotIdx++;
     }
   }
-  // + 1 créneau réservé "TAB possible" en toute fin de phase de poules (slot
+  // + 1 créneau réservé "TAB possible" en toute fin de la Phase 1 (slot
   // supplémentaire, n'affecte pas le classement, purement informatif/optionnel).
   const tabSlotIdx = slotIdx; // dernier slot = TAB
   const totalSlots = slotIdx+1;
@@ -594,46 +576,123 @@ window.buildPoolSchedule = function(){
   const finalSchedule = rawSchedule.map(m=>({ ...m, time: slotTimes[m.slot] }));
 
   ST.poolSchedule = finalSchedule;
-  ST.poolTabSlot = { time: slotTimes[tabSlotIdx], slot: tabSlotIdx }; // créneau TAB de poule (info)
-  ST.poolBreaks = insertedBreaks; // coupures réellement insérées pendant la phase de poules (affichage planning)
+  ST.poolTabSlot = { time: slotTimes[tabSlotIdx], slot: tabSlotIdx }; // créneau TAB Phase 1 (info)
+  ST.poolBreaks = insertedBreaks; // coupures réellement insérées pendant la Phase 1 (affichage planning)
   ST.results = {};
   ST.phase='pools';
-  saveTournament({ poolSchedule: finalSchedule, poolTabSlot: ST.poolTabSlot, poolBreaks: insertedBreaks, results:{}, phase:'pools', bracketSchedule:[] });
+  saveTournament({ poolSchedule: finalSchedule, poolTabSlot: ST.poolTabSlot, poolBreaks: insertedBreaks, results:{}, phase:'pools', groups:{W:[],X:[],Y:[],Z:[]}, groupSchedule:[], classementSchedule:[] });
   renderPlanningPreview();
 };
 
 // ══════════════════════════════════════════════════════════
-// CLASSEMENT DE POULE
+// PHASE 2 — Planning des groupes W,X,Y,Z (round-robin, même principe que Phase 1)
+// Démarre en continuité de la timeline de Phase 1 (après son créneau T.A.B.).
 // ══════════════════════════════════════════════════════════
-function getPoolResult(matchId){
-  const d = ST.results['pool-'+matchId];
+window.buildGroupSchedule = function(){
+  if(!isAdmin()) return;
+  const groups = ST.groups;
+  if(!groups.W || !groups.W.length){ alert('Composez d\'abord les groupes de Phase 2 (bouton "Composer les groupes").'); return; }
+  const cfg = ST.cfg;
+  const courts = cfg.courts||4;
+
+  const groupRounds = {};
+  ['W','X','Y','Z'].forEach(g=>{ groupRounds[g] = roundRobinPairs(groups[g]); });
+
+  const numJournees = Math.max(...Object.values(groupRounds).map(r=>r.length));
+  let matchNum=1;
+  const allMatches=[];
+  for(let j=0;j<numJournees;j++){
+    const maxMatchesInJournee = Math.max(...['W','X','Y','Z'].map(g=>(groupRounds[g][j]||[]).length));
+    for(let mi=0; mi<maxMatchesInJournee; mi++){
+      ['W','X','Y','Z'].forEach(g=>{
+        const pair = (groupRounds[g][j]||[])[mi];
+        if(pair){
+          const [a,b]=pair;
+          allMatches.push({ journee:j, groupMatchIdx:mi, group:g, a, b, matchId:matchNum++ });
+        }
+      });
+    }
+  }
+  const rawSchedule=[];
+  let slotIdx=0;
+  for(let j=0;j<numJournees;j++){
+    const journeeMatches = allMatches.filter(m=>m.journee===j);
+    for(let i=0;i<journeeMatches.length;i+=courts){
+      const slot = journeeMatches.slice(i,i+courts);
+      slot.forEach((m,ci)=>{
+        rawSchedule.push({ ...m, court:ci+1, slot:slotIdx });
+      });
+      slotIdx++;
+    }
+  }
+  const tabSlotIdx = slotIdx;
+  const totalSlots = slotIdx+1;
+
+  const matchSlotDur = cfg.matchDur+cfg.tt;
+  const tabDur = cfg.tabDuration||10;
+  const slotDurations = Array.from({length:totalSlots}, (_,i)=> i===tabSlotIdx ? tabDur : matchSlotDur);
+
+  // Reprend les coupures déjà consommées pendant la Phase 1, pour ne pas les
+  // réappliquer, puis poursuit la timeline sur la Phase 2.
+  const phase1Times = ST.poolSchedule.map(m=>m.time).concat(ST.poolTabSlot?[ST.poolTabSlot.time]:[]);
+  const appliedBreaks = appliedBreaksFromSchedule(phase1Times, cfg.breaks);
+  const lastPhase1Time = ST.poolTabSlot ? ST.poolTabSlot.time
+    : (ST.poolSchedule.length ? ST.poolSchedule[ST.poolSchedule.length-1].time : cfg.start);
+  const start = addMinutes(lastPhase1Time, cfg.matchDur+cfg.tt);
+
+  const { times: slotTimes, insertedBreaks } = computeSlotTimes(start, slotDurations, totalSlots, cfg.breaks, appliedBreaks);
+
+  const finalSchedule = rawSchedule.map(m=>({ ...m, time: slotTimes[m.slot] }));
+
+  ST.groupSchedule = finalSchedule;
+  ST.groupTabSlot = { time: slotTimes[tabSlotIdx], slot: tabSlotIdx };
+  ST.groupBreaks = insertedBreaks;
+  ST.results = Object.fromEntries(Object.entries(ST.results).filter(([k])=>!k.startsWith('group-'))); // reset résultats groupe seulement
+  ST.phase='groups';
+  saveTournament({ groupSchedule: finalSchedule, groupTabSlot: ST.groupTabSlot, groupBreaks: insertedBreaks, results: ST.results, phase:'groups', classementSchedule:[] });
+  renderGroupPlanningPreview();
+};
+
+
+// ══════════════════════════════════════════════════════════
+// CLASSEMENT GÉNÉRIQUE (réutilisé pour Phase 1 — poules — et Phase 2 — groupes)
+// `idsByKey` : ST.pools ou ST.groups ({A:[...],...} ou {W:[...],...})
+// `schedule` : ST.poolSchedule ou ST.groupSchedule
+// `groupField` : 'pool' ou 'group' (nom du champ sur chaque match)
+// `resultPrefix` : 'pool' ou 'group' (préfixe de clé dans ST.results)
+// ══════════════════════════════════════════════════════════
+function getPhaseResult(resultPrefix, matchId){
+  const d = ST.results[resultPrefix+'-'+matchId];
   if(!d) return { ga:'', gb:'', shootout:null };
   return { ga: d.ga??'', gb: d.gb??'', shootout: d.shootout||null };
 }
-window.setPoolResult = async function(matchId, ga, gb){
+window.setPhaseResult = async function(resultPrefix, matchId, ga, gb){
   if(!isScorer()) return;
-  const key = 'pool-'+matchId;
+  const key = resultPrefix+'-'+matchId;
   const current = ST.results[key] || {};
   const results = { ...ST.results, [key]: { ...current, ga, gb } };
   ST.results = results;
   await saveTournament({ results });
 };
-window.setPoolShootout = async function(matchId, shootout){
+window.setPhaseShootout = async function(resultPrefix, matchId, shootout){
   if(!isScorer()) return;
-  const key = 'pool-'+matchId;
+  const key = resultPrefix+'-'+matchId;
   const current = ST.results[key] || {};
   const results = { ...ST.results, [key]: { ...current, shootout } };
   ST.results = results;
   await saveTournament({ results });
 };
+// Rétro-compatibilité (code existant utilisant getPoolResult/setPoolResult/setPoolShootout)
+function getPoolResult(matchId){ return getPhaseResult('pool', matchId); }
+window.setPoolResult = (matchId,ga,gb)=>setPhaseResult('pool',matchId,ga,gb);
+window.setPoolShootout = (matchId,so)=>setPhaseShootout('pool',matchId,so);
 
-function computePoolStandings(pool){
-  const ids = ST.pools[pool]||[];
+function computeGenericStandings(ids, schedule, groupKey, groupField, resultPrefix){
   const stats = {};
   ids.forEach(id=>stats[id]={ id, pts:0, j:0, g:0, n:0, p:0, bp:0, bc:0, diff:0 });
-  const matches = ST.poolSchedule.filter(m=>m.pool===pool);
+  const matches = schedule.filter(m=>m[groupField]===groupKey);
   matches.forEach(m=>{
-    const r = getPoolResult(m.matchId);
+    const r = getPhaseResult(resultPrefix, m.matchId);
     if(r.ga==='' || r.gb==='') return;
     const ga=+r.ga, gb=+r.gb;
     const sa=stats[m.a], sb=stats[m.b];
@@ -646,17 +705,15 @@ function computePoolStandings(pool){
   });
   Object.values(stats).forEach(s=>s.diff=s.bp-s.bc);
 
-  // Tri : points > goal-average particulier > goal-average général > meilleure attaque > T.A.B.
   const arr = Object.values(stats);
-  const tiedPairs = tiedPairsForPool(pool); // [{matchId,a,b}] — confrontations directes à départager
+  const tiedPairs = tiedPairsForGroupGeneric(ids, schedule, groupKey, groupField, resultPrefix);
   arr.sort((a,b)=>{
     if(b.pts!==a.pts) return b.pts-a.pts;
-    // Goal-average particulier (confrontation directe) — appliqué seulement si 2 équipes ex-aequo
     const tied = arr.filter(x=>x.pts===a.pts);
     if(tied.length===2){
       const direct = matches.find(m=>(m.a===a.id&&m.b===b.id)||(m.a===b.id&&m.b===a.id));
       if(direct){
-        const r=getPoolResult(direct.matchId);
+        const r=getPhaseResult(resultPrefix, direct.matchId);
         if(r.ga!==''&&r.gb!==''){
           const aIsA = direct.a===a.id;
           const diffDirect = aIsA ? (+r.ga-+r.gb) : (+r.gb-+r.ga);
@@ -666,59 +723,35 @@ function computePoolStandings(pool){
     }
     if(b.diff!==a.diff) return b.diff-a.diff;
     if(b.bp!==a.bp) return b.bp-a.bp;
-    // Dernier recours (Article 6+8) : T.A.B. joué lors de leur confrontation
-    // directe en poule. Le vainqueur passe strictement devant le perdant.
     const pair = tiedPairs.find(p=>(p.a===a.id&&p.b===b.id)||(p.a===b.id&&p.b===a.id));
     if(pair){
-      const r = getPoolResult(pair.matchId);
+      const r = getPhaseResult(resultPrefix, pair.matchId);
       if(r.shootout && r.shootout.ga!=null && r.shootout.gb!=null){
         const aIsPairA = pair.a===a.id;
         const soDiff = aIsPairA ? (r.shootout.ga-r.shootout.gb) : (r.shootout.gb-r.shootout.ga);
         if(soDiff!==0) return -soDiff;
       }
     }
-    return 0; // T.A.B. non encore joué/saisi : égalité maintenue en attendant
+    return 0;
   });
   return arr;
 }
-function allPoolStandings(){
-  const out={};
-  ['A','B','C','D'].forEach(p=>out[p]=computePoolStandings(p));
-  return out;
-}
 
-// ── T.A.B. de poule — déclenchement automatique sur égalité parfaite ────
-// Après tri par points > GA particulier > GA général > meilleure attaque
-// (Article 6 du règlement), si 2+ équipes restent EXACTEMENT à égalité sur
-// ces 4 critères, on retrouve leur(s) match(s) direct(s) déjà joué(s) en
-// poule et on y rattache un T.A.B. (même mécanisme que la phase finale :
-// champ `shootout` sur le résultat du match). Le vainqueur du T.A.B. est
-// classé strictement au-dessus du perdant — indépendamment des autres
-// paires éventuellement concernées (cas à 3+ équipes à égalité).
-function findTiedGroups(pool){
-  const ids = ST.pools[pool]||[];
+function findTiedGroupsGeneric(ids, schedule, groupKey, groupField, resultPrefix){
   if(ids.length<2) return [];
-  const matches = ST.poolSchedule.filter(m=>m.pool===pool);
-  // Vérifie que tous les matchs de la poule sont joués : un groupe d'égalité
-  // n'a de sens qu'une fois le classement définitif (sinon un futur résultat
-  // pourrait encore changer la donne).
-  const allPlayed = matches.every(m=>{ const r=getPoolResult(m.matchId); return r.ga!==''&&r.gb!==''; });
+  const matches = schedule.filter(m=>m[groupField]===groupKey);
+  const allPlayed = matches.every(m=>{ const r=getPhaseResult(resultPrefix, m.matchId); return r.ga!==''&&r.gb!==''; });
   if(!allPlayed) return [];
-
   const stats = {};
   ids.forEach(id=>stats[id]={ id, pts:0, bp:0, bc:0, diff:0 });
   matches.forEach(m=>{
-    const r=getPoolResult(m.matchId);
+    const r=getPhaseResult(resultPrefix, m.matchId);
     const ga=+r.ga, gb=+r.gb;
     const sa=stats[m.a], sb=stats[m.b]; if(!sa||!sb) return;
     sa.bp+=ga; sa.bc+=gb; sb.bp+=gb; sb.bc+=ga;
     if(ga>gb) sa.pts+=3; else if(ga<gb) sb.pts+=3; else { sa.pts+=1; sb.pts+=1; }
   });
   Object.values(stats).forEach(s=>s.diff=s.bp-s.bc);
-
-  // Regroupe par (pts, diff, bp) strictement identiques — c'est ce qui reste
-  // après les 3 premiers critères de l'Article 6 (le GA particulier ne
-  // permet de différencier que les paires exactes, pas les groupes de 3+).
   const groups = {};
   Object.values(stats).forEach(s=>{
     const key = s.pts+'_'+s.diff+'_'+s.bp;
@@ -726,203 +759,291 @@ function findTiedGroups(pool){
   });
   return Object.values(groups).filter(g=>g.length>=2);
 }
-
-// Pour un groupe d'équipes à égalité, retrouve les paires consécutives à
-// départager par T.A.B. : si 2 équipes → 1 paire ; si 3+ équipes → toutes les
-// confrontations directes déjà jouées entre elles, dans l'ordre chronologique
-// du calendrier de poule (1er match joué entre 2 équipes du groupe = 1er T.A.B.).
-// Retourne aussi les groupes bruts (pour affichage "par groupe d'égalité").
-function tiedPairsForPool(pool){
-  const groups = findTiedGroups(pool);
+function tiedPairsForGroupGeneric(ids, schedule, groupKey, groupField, resultPrefix){
+  const groups = findTiedGroupsGeneric(ids, schedule, groupKey, groupField, resultPrefix);
   if(!groups.length) return [];
-  const matches = ST.poolSchedule.filter(m=>m.pool===pool).slice().sort((a,b)=>a.slot-b.slot);
+  const matches = schedule.filter(m=>m[groupField]===groupKey).slice().sort((a,b)=>a.slot-b.slot);
   const pairs=[];
   groups.forEach(group=>{
     matches.forEach(m=>{
-      if(group.includes(m.a) && group.includes(m.b)){
-        pairs.push({ matchId:m.matchId, a:m.a, b:m.b, group });
-      }
+      if(group.includes(m.a) && group.includes(m.b)) pairs.push({ matchId:m.matchId, a:m.a, b:m.b, group });
     });
   });
-  return pairs; // [{matchId, a, b, group:[...]}, ...] — un par confrontation directe entre équipes à égalité
+  return pairs;
 }
-// Variante groupée : [{group:[...ids], pairs:[{matchId,a,b}]}] — pratique pour
-// l'affichage "par groupe d'égalité" (récapitulatif du créneau T.A.B.).
-function tiedGroupsWithPairsForPool(pool){
-  const groups = findTiedGroups(pool);
+function tiedGroupsWithPairsGeneric(ids, schedule, groupKey, groupField, resultPrefix){
+  const groups = findTiedGroupsGeneric(ids, schedule, groupKey, groupField, resultPrefix);
   if(!groups.length) return [];
-  const matches = ST.poolSchedule.filter(m=>m.pool===pool).slice().sort((a,b)=>a.slot-b.slot);
+  const matches = schedule.filter(m=>m[groupField]===groupKey).slice().sort((a,b)=>a.slot-b.slot);
   return groups.map(group=>({
     group,
     pairs: matches.filter(m=>group.includes(m.a) && group.includes(m.b)).map(m=>({ matchId:m.matchId, a:m.a, b:m.b }))
   }));
 }
 
-// Vrai si CE match précis de poule fait partie d'une paire à départager par T.A.B.
+// ── Phase 1 (poules A,B,C,D) — wrappers sur les fonctions génériques ────
+function computePoolStandings(pool){
+  return computeGenericStandings(ST.pools[pool]||[], ST.poolSchedule, pool, 'pool', 'pool');
+}
+function allPoolStandings(){
+  const out={};
+  ['A','B','C','D'].forEach(p=>out[p]=computePoolStandings(p));
+  return out;
+}
+function tiedPairsForPool(pool){
+  return tiedPairsForGroupGeneric(ST.pools[pool]||[], ST.poolSchedule, pool, 'pool', 'pool');
+}
+function tiedGroupsWithPairsForPool(pool){
+  return tiedGroupsWithPairsGeneric(ST.pools[pool]||[], ST.poolSchedule, pool, 'pool', 'pool');
+}
 function poolMatchNeedsShootout(matchId, pool){
   return tiedPairsForPool(pool).some(p=>p.matchId===matchId);
 }
-
 function poolRankTeam(pool, rank){
   const st = computePoolStandings(pool);
   return st[rank-1] ? st[rank-1].id : null;
 }
 
+// ── Phase 2 (groupes W,X,Y,Z) — wrappers sur les fonctions génériques ────
+function getGroupResult(matchId){ return getPhaseResult('group', matchId); }
+window.setGroupResult = (matchId,ga,gb)=>setPhaseResult('group',matchId,ga,gb);
+window.setGroupShootout = (matchId,so)=>setPhaseShootout('group',matchId,so);
+function computeGroupStandings(group){
+  return computeGenericStandings(ST.groups[group]||[], ST.groupSchedule, group, 'group', 'group');
+}
+function allGroupStandings(){
+  const out={};
+  ['W','X','Y','Z'].forEach(g=>out[g]=computeGroupStandings(g));
+  return out;
+}
+function tiedPairsForGroup(group){
+  return tiedPairsForGroupGeneric(ST.groups[group]||[], ST.groupSchedule, group, 'group', 'group');
+}
+function tiedGroupsWithPairsForGroup(group){
+  return tiedGroupsWithPairsGeneric(ST.groups[group]||[], ST.groupSchedule, group, 'group', 'group');
+}
+function groupMatchNeedsShootout(matchId, group){
+  return tiedPairsForGroup(group).some(p=>p.matchId===matchId);
+}
+function groupRankTeam(group, rank){
+  const st = computeGroupStandings(group);
+  return st[rank-1] ? st[rank-1].id : null;
+}
+
 // ══════════════════════════════════════════════════════════
-// PHASE FINALE — résolution dynamique de l'arbre
+// RECOMPOSITION PHASE 2 — Groupes W,X,Y,Z à partir du classement Phase 1
+// Composition officielle (Article 7 du règlement) :
+//   W = 1erA, 1erB, 2eC, 2eD, 1er-des-3èmes
+//   X = 1erC, 1erD, 2eA, 2eB, 2e-des-3èmes
+//   Y = 4eA, 4eB, 5eC, 5eD, 3e-des-3èmes
+//   Z = 4eC, 4eD, 5eA, 5eB, 4e-des-3èmes
+// Le classement des 4 équipes 3èmes de poule (A,B,C,D) entre elles applique
+// les mêmes critères que l'Article 6, SAUF le goal-average particulier (les
+// 3èmes de poules différentes ne se sont jamais affrontés en Phase 1) :
+// points > goal-average général > meilleure attaque. Un T.A.B. spécifique
+// est prévu si égalité parfaite persiste entre 2+ des 4 troisièmes (cf.
+// thirdPlaceTiedPairs ci-dessous) — comparable au système de poule, mais
+// sans confrontation directe possible puisqu'aucun match ne les a opposés.
+function rankThirdPlaces(){
+  const thirds = ['A','B','C','D'].map(p=>{
+    const st = computePoolStandings(p);
+    return st[2]; // 3e de la poule (index 2)
+  }).filter(Boolean);
+  // tri par pts > diff > bp (pas de GA particulier : aucune confrontation directe)
+  const arr = thirds.slice();
+  const tiedPairs = thirdPlaceTiedPairs();
+  arr.sort((a,b)=>{
+    if(b.pts!==a.pts) return b.pts-a.pts;
+    if(b.diff!==a.diff) return b.diff-a.diff;
+    if(b.bp!==a.bp) return b.bp-a.bp;
+    const pair = tiedPairs.find(p=>(p.a===a.id&&p.b===b.id)||(p.a===b.id&&p.b===a.id));
+    if(pair){
+      const r = getPhaseResult('third', pair.matchId);
+      if(r.shootout && r.shootout.ga!=null && r.shootout.gb!=null){
+        const aIsPairA = pair.a===a.id;
+        const soDiff = aIsPairA ? (r.shootout.ga-r.shootout.gb) : (r.shootout.gb-r.shootout.ga);
+        if(soDiff!==0) return -soDiff;
+      }
+    }
+    return 0;
+  });
+  return arr; // [{id,pts,diff,bp,...}, ...] triés — arr[0] = 1er des 3èmes, etc.
+}
+// T.A.B. entre 3èmes de poules à égalité parfaite : pas de confrontation
+// directe possible (poules différentes), donc pas de "match concerné" — on
+// matérialise un pseudo-match virtuel par paire à égalité, identifié par une
+// clé stable (ex: matchId négatif dédié), saisi depuis le récapitulatif T.A.B.
+function thirdPlaceTiedPairs(){
+  const thirds = ['A','B','C','D'].map(p=>{
+    const st = computePoolStandings(p);
+    return st[2];
+  }).filter(Boolean);
+  if(thirds.length<2) return [];
+  const allPlayed = ['A','B','C','D'].every(p=>{
+    const matches = ST.poolSchedule.filter(m=>m.pool===p);
+    return matches.every(m=>{ const r=getPoolResult(m.matchId); return r.ga!==''&&r.gb!==''; });
+  });
+  if(!allPlayed) return [];
+  const groups = {};
+  thirds.forEach(s=>{
+    const key = s.pts+'_'+s.diff+'_'+s.bp;
+    (groups[key]=groups[key]||[]).push(s.id);
+  });
+  const tiedGroups = Object.values(groups).filter(g=>g.length>=2);
+  if(!tiedGroups.length) return [];
+  // matchId virtuel stable basé sur les 2 ids triés (pas de vrai match en Phase 1)
+  const pairs=[];
+  tiedGroups.forEach(group=>{
+    for(let i=0;i<group.length;i++) for(let j=i+1;j<group.length;j++){
+      const ids = [group[i],group[j]].sort();
+      pairs.push({ matchId:'tp-'+ids.join('-'), a:ids[0], b:ids[1], group });
+    }
+  });
+  return pairs;
+}
+
+
 // ══════════════════════════════════════════════════════════
-function getBracketResult(m){
-  const d = ST.results['bracket-'+m];
+// PHASE FINALE — résultats des matchs de classement (pas d'arbre, pas de
+// vainqueur/perdant en cascade : chaque match est indépendant, basé sur les
+// rangs finaux des groupes W,X,Y,Z).
+// ══════════════════════════════════════════════════════════
+function getClassementResult(cm){
+  const d = ST.results['classement-'+cm];
   if(!d) return { ga:'', gb:'', shootout:null };
   return { ga:d.ga??'', gb:d.gb??'', shootout:d.shootout||null };
 }
-window.setBracketResult = async function(m, ga, gb, shootout){
+window.setClassementResult = async function(cm, ga, gb){
   if(!isScorer()) return;
-  const key = 'bracket-'+m;
-  const results = { ...ST.results, [key]: { ga, gb, shootout: shootout||null } };
+  const key = 'classement-'+cm;
+  const current = ST.results[key] || {};
+  const results = { ...ST.results, [key]: { ...current, ga, gb } };
+  ST.results = results;
+  await saveTournament({ results });
+};
+window.setClassementShootout = async function(cm, shootout){
+  if(!isScorer()) return;
+  const key = 'classement-'+cm;
+  const current = ST.results[key] || {};
+  const results = { ...ST.results, [key]: { ...current, shootout } };
   ST.results = results;
   await saveTournament({ results });
 };
 
-// Détermine vainqueur/perdant d'un match de phase finale (avec tirs au but si égalité)
-function bracketMatchWinner(m){
-  const r = getBracketResult(m);
-  if(r.ga==='' || r.gb==='') return null;
-  const ga=+r.ga, gb=+r.gb;
-  if(ga>gb) return bracketTeam(m,'a');
-  if(ga<gb) return bracketTeam(m,'b');
-  // égalité → tirs au but obligatoires
-  if(r.shootout && r.shootout.ga!=null && r.shootout.gb!=null){
-    return r.shootout.ga>r.shootout.gb ? bracketTeam(m,'a') : bracketTeam(m,'b');
-  }
-  return null; // en attente des tirs au but
-}
-function bracketMatchLoser(m){
-  const w = bracketMatchWinner(m); if(!w) return null;
-  const a=bracketTeam(m,'a'), b=bracketTeam(m,'b');
-  return w===a ? b : a;
-}
-function bracketTeam(m, side){
-  const b = BRACKET_BY_NUM[m]; if(!b) return null;
-  const slot = b[side];
-  if(!slot) return null;
-  if(slot.pool){ return poolRankTeam(slot.pool, slot.rank); }
-  if(slot.from==='V') return bracketMatchWinner(slot.m);
-  if(slot.from==='P') return bracketMatchLoser(slot.m);
-  return null;
-}
-
-window.generateBracket = function(){
+window.buildGroups = function(){
   if(!isAdmin()) return;
-  // Vérifie que toutes les poules ont un classement complet
-  const allDone = ['A','B','C','D'].every(p=>{
+  const allPoolsDone = ['A','B','C','D'].every(p=>{
     const matches = ST.poolSchedule.filter(m=>m.pool===p);
-    return matches.every(m=>{ const r=getPoolResult(m.matchId); return r.ga!==''&&r.gb!=='' ; });
+    return matches.length>0 && matches.every(m=>{ const r=getPoolResult(m.matchId); return r.ga!==''&&r.gb!==''; });
   });
-  if(!allDone && !confirm('Tous les matchs de poules ne sont pas terminés. Générer quand même la phase finale (places non qualifiées resteront vides) ?')) return;
+  if(!allPoolsDone){ alert('Tous les matchs de la Phase 1 doivent être terminés avant de composer les groupes de Phase 2.'); return; }
+  if(thirdPlaceTiedPairs().length){
+    alert('Égalité parfaite détectée entre plusieurs équipes classées 3èmes de leur poule. Réglez les T.A.B. correspondants (onglet T.A.B. de la Phase 1) avant de composer les groupes.');
+    return;
+  }
+  const thirdsRanked = rankThirdPlaces(); // [1er-des-3èmes, 2e, 3e, 4e]
+  const w5 = thirdsRanked[0]?.id, x5 = thirdsRanked[1]?.id, y5 = thirdsRanked[2]?.id, z5 = thirdsRanked[3]?.id;
+
+  const groups = {
+    W: [poolRankTeam('A',1), poolRankTeam('B',1), poolRankTeam('C',2), poolRankTeam('D',2), w5].filter(Boolean),
+    X: [poolRankTeam('C',1), poolRankTeam('D',1), poolRankTeam('A',2), poolRankTeam('B',2), x5].filter(Boolean),
+    Y: [poolRankTeam('A',4), poolRankTeam('B',4), poolRankTeam('C',5), poolRankTeam('D',5), y5].filter(Boolean),
+    Z: [poolRankTeam('C',4), poolRankTeam('D',4), poolRankTeam('A',5), poolRankTeam('B',5), z5].filter(Boolean),
+  };
+  ST.groups = groups;
+  ST.phase = 'groups';
+  saveTournament({ groups, phase:'groups' });
+  ST.activeView='groups';
+  renderTournamentPage();
+  alert('Groupes W, X, Y, Z composés ! Cliquez sur "Générer le planning Phase 2" pour créer le calendrier des matchs.');
+};
+
+// ══════════════════════════════════════════════════════════
+// Génère le planning de la Phase Finale (matchs de classement directs) :
+// les 9 matchs places 3e à 20e se jouent en parallèle sur les 4 terrains
+// (créneaux normaux), puis la Finale (1ère-2e place) se joue SEULE, ensuite,
+// sur le terrain A — en continuité de la timeline (Phase 1 → Phase 2 → Finale).
+// ══════════════════════════════════════════════════════════
+window.buildClassementSchedule = function(){
+  if(!isAdmin()) return;
+  const allGroupsDone = ['W','X','Y','Z'].every(g=>{
+    const matches = ST.groupSchedule.filter(m=>m.group===g);
+    return matches.length>0 && matches.every(m=>{ const r=getGroupResult(m.matchId); return r.ga!==''&&r.gb!==''; });
+  });
+  if(!allGroupsDone && !confirm('Tous les matchs de Phase 2 ne sont pas terminés. Générer quand même la Phase Finale (places non qualifiées resteront vides) ?')) return;
 
   const cfg = ST.cfg;
   const courts = cfg.courts||4;
   if(courts<4){
-    alert('La répartition spéciale de la finale (3e-8e place sur les terrains B/C/D puis finale seule sur le terrain A) nécessite au moins 4 terrains. Configurez au moins 4 terrains (page Config) avant de générer la phase finale.');
+    alert('La répartition spéciale de la finale (matchs de classement sur 4 terrains puis finale seule sur le terrain A) nécessite au moins 4 terrains. Configurez au moins 4 terrains (page Config) avant de générer la Phase Finale.');
     return;
   }
-  const matchSlotDur = cfg.matchDurBracket+cfg.tt;
+  const matchSlotDur = cfg.matchDurClassement+cfg.tt;
   const tabDur = cfg.tabDuration||10;
 
-  // Départ de la phase finale = juste après le dernier créneau de poules
-  // (TAB de poule inclus), en continuité de la même timeline — la phase finale
-  // ne redémarre plus après une pause fixe : les coupures peuvent désormais
-  // tomber n'importe où, y compris pendant les poules.
-  const lastPoolTime = ST.poolTabSlot ? ST.poolTabSlot.time
-    : (ST.poolSchedule.length ? ST.poolSchedule[ST.poolSchedule.length-1].time : cfg.start);
-  const start = addMinutes(lastPoolTime, cfg.matchDur+cfg.tt);
+  // Départ de la Phase Finale = juste après le dernier créneau de la Phase 2
+  // (TAB de phase 2 inclus), en continuité de la même timeline.
+  const lastGroupTime = ST.groupTabSlot ? ST.groupTabSlot.time
+    : (ST.groupSchedule.length ? ST.groupSchedule[ST.groupSchedule.length-1].time : cfg.start);
+  const start = addMinutes(lastGroupTime, cfg.matchDur+cfg.tt);
 
-  // Matchs du tour 3 traités à part : 3e-4e (m35), 5e-6e (m34), 7e-8e (m33)
-  // joués en même temps sur les terrains B, C, D ; la finale 1ère-2e (m36)
-  // se joue ENSUITE, seule, sur le terrain A.
-  const ROUND3_PODIUM_NUMS = [33,34,35]; // 7-8e, 5-6e, 3-4e
-  const ROUND3_FINAL_NUM   = 36;          // finale 1-2e
-  const round3Rest = BRACKET_ROUND3.filter(b=>!ROUND3_PODIUM_NUMS.includes(b.m) && b.m!==ROUND3_FINAL_NUM); // places 9e à 24e
+  const finalMatch = CLASSEMENT_MATCHES.find(c=>c.isFinal);
+  const restMatches = CLASSEMENT_MATCHES.filter(c=>!c.isFinal); // 9 matchs, places 3e à 20e
 
   const rawSchedule=[];
-  const tabSlots=[]; // { round, slot }
+  const tabSlots=[];
   const slotDurations=[];
   let slotIdx=0;
 
-  // ── Tours 1 et 2 : inchangés (créneaux de `courts` matchs + TAB après) ──
-  [BRACKET_ROUND1, BRACKET_ROUND2].forEach((round,ri)=>{
-    for(let i=0;i<round.length;i+=courts){
-      const slot = round.slice(i,i+courts);
-      slot.forEach((b,ci)=>{
-        rawSchedule.push({ m:b.m, round:ri+1, court:ci+1, slot:slotIdx, label: b.label||null });
-      });
-      slotDurations.push(matchSlotDur);
-      slotIdx++;
-    }
-    tabSlots.push({ round: ri+1, slot: slotIdx });
-    slotDurations.push(tabDur);
-    slotIdx++;
-  });
-
-  // ── Tour 3, partie 1 : places 9e à 24e (6 matchs, créneaux normaux) ──
-  for(let i=0;i<round3Rest.length;i+=courts){
-    const slot = round3Rest.slice(i,i+courts);
-    slot.forEach((b,ci)=>{
-      rawSchedule.push({ m:b.m, round:3, court:ci+1, slot:slotIdx, label: b.label||null });
+  // ── Les 9 matchs de classement (places 3 à 20), créneaux normaux sur les 4 terrains ──
+  for(let i=0;i<restMatches.length;i+=courts){
+    const slot = restMatches.slice(i,i+courts);
+    slot.forEach((c,ci)=>{
+      rawSchedule.push({ cm:c.cm, court:ci+1, slot:slotIdx, label:c.label });
     });
     slotDurations.push(matchSlotDur);
     slotIdx++;
   }
-
-  // ── Tour 3, partie 2 : 7-8e / 5-6e / 3-4e en même temps sur B, C, D (terrains 2,3,4) ──
-  const podiumSlotIdx = slotIdx;
-  ROUND3_PODIUM_NUMS.forEach((mNum,ci)=>{
-    const b = BRACKET_BY_NUM[mNum];
-    rawSchedule.push({ m:mNum, round:3, court:ci+2, slot:podiumSlotIdx, label: b.label||null }); // terrains 2(B),3(C),4(D)
-  });
-  slotDurations.push(matchSlotDur);
-  slotIdx++;
-
-  // créneau TAB dédié pour ce bloc 3e-8e (avant la finale, au cas où l'un de
-  // ces 3 matchs se termine à égalité).
-  tabSlots.push({ round: 3, slot: slotIdx, label:'T.A.B. — places 3e à 8e' });
+  // créneau TAB dédié pour ces 9 matchs (avant la finale, au cas où l'un
+  // d'entre eux se termine à égalité).
+  tabSlots.push({ slot: slotIdx, label:'T.A.B. — places 3e à 20e' });
   slotDurations.push(tabDur);
   slotIdx++;
 
-  // ── Tour 3, partie 3 : finale 1ère-2e place, SEULE sur le terrain A (terrain 1) ──
+  // ── La Finale (1ère-2e place), SEULE sur le terrain A (terrain 1) ──
   const finalSlotIdx = slotIdx;
-  const finalB = BRACKET_BY_NUM[ROUND3_FINAL_NUM];
-  rawSchedule.push({ m:ROUND3_FINAL_NUM, round:3, court:1, slot:finalSlotIdx, label: finalB.label||null });
+  rawSchedule.push({ cm:finalMatch.cm, court:1, slot:finalSlotIdx, label:finalMatch.label });
   slotDurations.push(matchSlotDur);
   slotIdx++;
 
   // créneau TAB final (pour la finale elle-même, en cas d'égalité).
-  tabSlots.push({ round: 3, slot: slotIdx, label:'T.A.B. — Finale' });
+  tabSlots.push({ slot: slotIdx, label:'T.A.B. — Finale' });
   slotDurations.push(tabDur);
   slotIdx++;
 
   const totalSlots = slotIdx;
-  // Reprend les coupures déjà consommées pendant les poules (pour ne pas les
-  // réappliquer), puis poursuit la timeline sur la phase finale.
-  const poolTimes = ST.poolSchedule.map(m=>m.time).concat(ST.poolTabSlot?[ST.poolTabSlot.time]:[]);
-  const appliedBreaks = appliedBreaksFromSchedule(poolTimes, cfg.breaks);
+  // Reprend les coupures déjà consommées pendant Phase 1 + Phase 2.
+  const priorTimes = ST.poolSchedule.map(m=>m.time)
+    .concat(ST.poolTabSlot?[ST.poolTabSlot.time]:[])
+    .concat(ST.groupSchedule.map(m=>m.time))
+    .concat(ST.groupTabSlot?[ST.groupTabSlot.time]:[]);
+  const appliedBreaks = appliedBreaksFromSchedule(priorTimes, cfg.breaks);
   const { times: slotTimes, insertedBreaks } = computeSlotTimes(start, slotDurations, totalSlots, cfg.breaks, appliedBreaks);
 
   const schedule = rawSchedule.map(m=>({ ...m, time: slotTimes[m.slot] }));
   const tabSlotsWithTime = tabSlots.map(t=>({ ...t, time: slotTimes[t.slot] }));
 
-  ST.bracketSchedule = schedule;
-  ST.bracketTabSlots = tabSlotsWithTime; // créneaux TAB après chaque tour + bloc podium + finale (info)
-  ST.bracketBreaks = insertedBreaks; // coupures réellement insérées pendant la phase finale (affichage planning)
-  ST.phase = 'bracket';
-  saveTournament({ bracketSchedule: schedule, bracketTabSlots: tabSlotsWithTime, bracketBreaks: insertedBreaks, phase:'bracket' });
-  renderTournamentPage();
+  ST.classementSchedule = schedule;
+  ST.classementTabSlots = tabSlotsWithTime;
+  ST.classementBreaks = insertedBreaks;
+  ST.phase = 'classement';
+  saveTournament({ classementSchedule: schedule, classementTabSlots: tabSlotsWithTime, classementBreaks: insertedBreaks, phase:'classement' });
+  renderClassementPage();
 };
 
 window.resetAllResults = async function(){
   if(!isAdmin()) return;
-  if(!confirm('Réinitialiser TOUS les scores (poules + phase finale) ? Cette action est irréversible.')) return;
+  if(!confirm('Réinitialiser TOUS les scores (Phase 1 + Phase 2 + Phase Finale) ? Cette action est irréversible.')) return;
   ST.results = {};
   await saveTournament({ results: {} });
   refreshCurrentPage();
@@ -930,10 +1051,17 @@ window.resetAllResults = async function(){
 
 window.newTournament = async function(){
   if(!isAdmin()){ alert('Admin uniquement.'); return; }
-  if(!confirm('Nouveau tournoi ? Toutes les données (équipes, poules, scores) seront définitivement supprimées.')) return;
-  ST.teams=[]; ST.pools={A:[],B:[],C:[],D:[]}; ST.poolSchedule=[]; ST.bracketSchedule=[];
-  ST.results={}; ST.phase='pools'; ST.activeView='pools'; ST.activePoolRound=0; ST.activeBracketRound=1;
-  await saveTournament({ teams:[], pools:{A:[],B:[],C:[],D:[]}, poolSchedule:[], bracketSchedule:[], results:{}, phase:'pools', liveOpen:false });
+  if(!confirm('Nouveau tournoi ? Toutes les données (équipes, poules, groupes, scores) seront définitivement supprimées.')) return;
+  ST.teams=[]; ST.pools={A:[],B:[],C:[],D:[]}; ST.poolSchedule=[]; ST.poolTabSlot=null; ST.poolBreaks=[];
+  ST.groups={W:[],X:[],Y:[],Z:[]}; ST.groupSchedule=[]; ST.groupTabSlot=null; ST.groupBreaks=[];
+  ST.classementSchedule=[]; ST.classementTabSlots=[]; ST.classementBreaks=[];
+  ST.results={}; ST.phase='pools'; ST.activeView='pools'; ST.activePoolRound=0; ST.activeGroupRound=0;
+  await saveTournament({
+    teams:[], pools:{A:[],B:[],C:[],D:[]}, poolSchedule:[], poolTabSlot:null, poolBreaks:[],
+    groups:{W:[],X:[],Y:[],Z:[]}, groupSchedule:[], groupTabSlot:null, groupBreaks:[],
+    classementSchedule:[], classementTabSlots:[], classementBreaks:[],
+    results:{}, phase:'pools', liveOpen:false
+  });
   goTo(1);
 };
 
@@ -1002,7 +1130,7 @@ function canGoFwd(){
   if(ST.page===1) return ST.teams.length>=8;
   if(ST.page===2) return ST.pools.A.length>0;
   if(ST.page===3) return ST.poolSchedule.length>0;
-  if(ST.page===4) return ST.phase==='bracket' || ST.phase==='done';
+  if(ST.page===4) return ST.phase==='classement' || ST.phase==='done';
   return false;
 }
 function updateFwdBtn(){
@@ -1181,7 +1309,7 @@ window.changeUserRole = async function(userId, newRole){
   try {
     const patch = { role: newRole };
     if(newRole!=='manager'){ patch.teamId = null; patch.tournament = null; }
-    else { patch.tournament = 'foot24'; }
+    else { patch.tournament = 'foot20'; }
     await updateDoc(doc(db,'users',userId), patch);
     loadUsersList();
   } catch(e){
@@ -1254,8 +1382,11 @@ window.createStaffAccount = async function(){
     await updateProfile(cred.user, { displayName: name });
 
     // 2. Crée la fiche Firestore avec le rôle choisi (+ teamId + tournament si manager)
+    // Le champ 'tournament' garantit l'isolation entre les comptes manager de
+    // cette app (20 équipes) et ceux de l'app 24 équipes, même si elles
+    // partagent le même projet Firebase / la même collection 'users'.
     const userDoc = { email, name, role, createdAt: serverTimestamp(), createdBy: adminEmail };
-    if(role==='manager'){ userDoc.teamId = teamId; userDoc.tournament = 'foot24'; }
+    if(role==='manager'){ userDoc.teamId = teamId; userDoc.tournament = 'foot20'; }
     await setDoc(doc(db,'users',newUid), userDoc);
 
     // 3. Reconnecte l'admin avec son propre mot de passe
@@ -1348,10 +1479,10 @@ window.updateBreakDraft = function(i, field, value){
 
 function getCfg(){
   return {
-    n:              24, // format officiel fixe : 24 équipes (4 poules de 6)
+    n:              20, // format officiel fixe : 20 équipes (4 poules de 5)
     courts:         +(document.getElementById('cfg_courts')?.value||4),
-    matchDur:       +(document.getElementById('cfg_matchdur')?.value||12),
-    matchDurBracket:+(document.getElementById('cfg_matchdur_bracket')?.value||12),
+    matchDur:       +(document.getElementById('cfg_matchdur')?.value||13),
+    matchDurClassement:+(document.getElementById('cfg_matchdur_classement')?.value||13),
     tt:             +(document.getElementById('cfg_tt')?.value||4),
     start:          document.getElementById('cfg_start')?.value||'09:00',
     breaks:         _breaksDraft.filter(b=>b.time).map(b=>({ time:b.time, duration:b.duration||0, label:b.label||'Coupure' })),
@@ -1365,7 +1496,7 @@ function renderCfgForm(){
   setV('cfg_n', c.n);
   setV('cfg_courts', c.courts);
   setV('cfg_matchdur', c.matchDur);
-  setV('cfg_matchdur_bracket', c.matchDurBracket);
+  setV('cfg_matchdur_classement', c.matchDurClassement);
   setV('cfg_tt', c.tt);
   setV('cfg_start', c.start);
   setV('cfg_draw', c.draw||'order');
@@ -1375,32 +1506,38 @@ function renderCfgForm(){
   onCfgChange();
 }
 window.onCfgChange = function(){
-  const n = +(document.getElementById('cfg_n')?.value||24);
+  const n = +(document.getElementById('cfg_n')?.value||20);
   const courts = +(document.getElementById('cfg_courts')?.value||4);
-  const matchDur = +(document.getElementById('cfg_matchdur')?.value||12);
+  const matchDur = +(document.getElementById('cfg_matchdur')?.value||13);
+  const matchDurClassement = +(document.getElementById('cfg_matchdur_classement')?.value||13);
   const tt = +(document.getElementById('cfg_tt')?.value||4);
+  const tabDur = +(document.getElementById('cfg_tabdur')?.value||10);
 
-  // Estimation poules
-  const numPools=4, teamsPerPool=Math.ceil(n/numPools);
-  const journees = teamsPerPool - (teamsPerPool%2===0?1:0) || teamsPerPool-1;
-  const matchesPerJournee = numPools * Math.floor(teamsPerPool/2);
-  const slotsNeeded = Math.ceil(matchesPerJournee/courts) * Math.max(1,journees);
-  const poolDuration = (slotsNeeded+1) * (matchDur+tt); // +1 = créneau TAB de poule
+  // Estimation Phase 1 (poules) et Phase 2 (groupes) : même structure,
+  // 4 groupes de 5, round-robin complet = 10 matchs/groupe, 10 créneaux à
+  // `courts` matchs simultanés (1 par poule/groupe) + 1 créneau T.A.B.
+  const teamsPerGroup = Math.ceil(n/4);
+  const matchsPerGroup = teamsPerGroup*(teamsPerGroup-1)/2; // round-robin complet
+  const slotsPerPhase = matchsPerGroup; // 1 match par poule/groupe en parallèle, par créneau
+  const phase1Duration = slotsPerPhase*(matchDur+tt) + tabDur;
+  const phase2Duration = slotsPerPhase*(matchDur+tt) + tabDur;
 
-  // Estimation phase finale : 36 matchs (12+12+12) + 3 créneaux TAB, répartis sur `courts` terrains
-  const bracketSlots = Math.ceil(12/courts)*3 + 3;
-  const bracketDuration = bracketSlots*(matchDur+tt);
+  // Estimation Phase Finale : 10 matchs de classement (9 en parallèle + 1
+  // créneau T.A.B., puis la Finale seule + son T.A.B.)
+  const classementSlots = Math.ceil(9/courts) + 1 /*TAB*/ + 1 /*finale*/ + 1 /*TAB finale*/;
+  const classementDuration = (Math.ceil(9/courts))*(matchDur+tt) + tabDur + matchDurClassement+tt + tabDur;
 
   const infoEl = document.getElementById('cfg_info');
   if(infoEl){
     infoEl.className='info info-b';
-    infoEl.innerHTML = `🏟️ <strong>${n} équipes</strong> réparties en <strong>4 poules</strong> de ${teamsPerPool} · <strong>${courts} terrain${courts>1?'s':''}</strong><br>
-    📅 Phase de poules : ~<strong>${journees} journées</strong> + créneau T.A.B., durée estimée <strong>${Math.round(poolDuration/60*10)/10}h</strong><br>
-    🏆 Phase finale : <strong>36 matchs</strong> (3 tours) + créneaux T.A.B., durée estimée <strong>${Math.round(bracketDuration/60*10)/10}h</strong>`;
+    infoEl.innerHTML = `🏟️ <strong>${n} équipes</strong> réparties en <strong>4 poules</strong> de ${teamsPerGroup} · <strong>${courts} terrain${courts>1?'s':''}</strong><br>
+    📅 Phase 1 (Poules) : <strong>${matchsPerGroup} matchs/poule</strong> + créneau T.A.B., durée estimée <strong>${Math.round(phase1Duration/60*10)/10}h</strong><br>
+    📅 Phase 2 (Groupes W,X,Y,Z) : <strong>${matchsPerGroup} matchs/groupe</strong> + créneau T.A.B., durée estimée <strong>${Math.round(phase2Duration/60*10)/10}h</strong><br>
+    🏆 Phase Finale : <strong>10 matchs de classement</strong> (places 3 à 20 + Finale seule sur terrain A) + créneaux T.A.B., durée estimée <strong>${Math.round(classementDuration/60*10)/10}h</strong>`;
   }
 
   const start=document.getElementById('cfg_start')?.value||'09:00';
-  const totalDuration = poolDuration + bracketDuration;
+  const totalDuration = phase1Duration + phase2Duration + classementDuration;
   const breaksTotal = _breaksDraft.reduce((s,b)=>s+(b.duration||0),0);
   const estEnd = addMinutes(start, totalDuration + breaksTotal);
   const el = document.getElementById('cfgPreview');
@@ -1409,7 +1546,7 @@ window.onCfgChange = function(){
     const breaksTxt = _breaksDraft.length
       ? _breaksDraft.map(b=>`☕ ${b.label} ~${b.time} (${b.duration} min)`).join(' · ')
       : 'Aucune coupure';
-    el.innerHTML=`☀️ Début : ${start} · ⏱ match poules ${matchDur} min / finale ${+(document.getElementById('cfg_matchdur_bracket')?.value||12)} min · transition ${tt} min<br>
+    el.innerHTML=`☀️ Début : ${start} · ⏱ match poules/groupes ${matchDur} min / finale ${matchDurClassement} min · transition ${tt} min<br>
     ${breaksTxt}<br>
     🏁 Fin estimée ~${estEnd} (estimation, les coupures réelles se caleront sur les créneaux)`;
   }
@@ -1425,7 +1562,7 @@ window.saveCfgAndNext = async function(){
 // PAGE 2 — ÉQUIPES & TIRAGE DES POULES
 // ══════════════════════════════════════════════════════════
 function renderTeamsPage(){
-  const limit = ST.cfg.n||24;
+  const limit = ST.cfg.n||20;
   const list = document.getElementById('teamList');
   const info = document.getElementById('teamCountInfo');
   if(info) info.textContent = ST.teams.length + ' équipe' + (ST.teams.length>1?'s':'') + ' / ' + limit;
@@ -1449,7 +1586,7 @@ function renderTeamsPage(){
 
 window.addTeam = async function(){
   if(!isAdmin()) return;
-  if(ST.teams.length>=24){ alert('Le tournoi est limité à 24 équipes (format officiel).'); return; }
+  if(ST.teams.length>=20){ alert('Le tournoi est limité à 20 équipes (format officiel).'); return; }
   const name = document.getElementById('t_name').value.trim();
   const club = document.getElementById('t_club').value.trim() || name;
   const lv   = +document.getElementById('t_lv').value || 3;
@@ -1460,7 +1597,7 @@ window.addTeam = async function(){
   // Crée le doc teamRosters vide associé : nécessaire pour que le futur responsable
   // d'équipe (manager) puisse ensuite faire un update (et non un create, qui lui
   // est interdit par les règles Firestore) lors de sa 1ère sauvegarde de joueurs.
-  try { await setDoc(doc(db,'teamRosters',id), { players: [], updatedAt: serverTimestamp() }); }
+  try { await setDoc(doc(db,'teamRosters20',id), { players: [], updatedAt: serverTimestamp() }); }
   catch(e){ console.warn('Création teamRosters initiale échouée (non bloquant)', e); }
   ['t_name','t_club'].forEach(fid=>{ const el=document.getElementById(fid); if(el) el.value=''; });
   renderTeamsPage();
@@ -1483,7 +1620,7 @@ window.clearTeams = async function(){
 };
 window.autoFillTeams = async function(){
   if(!isAdmin()) return;
-  const n = 24;
+  const n = 20;
   const villes = ['Nantes','Rennes','Angers','Le Mans','Laval','Cholet','La Roche','Saint-Nazaire'];
   const entreprises = ['Atlantic SA','TechnoSoft','BTP Ouest','Logistique Plus','MécaPro','Énergie Verte','DataCorp','AgriFoods','BâtiPro','Transport Express','Numérique+','GreenBuild'];
   ST.teams=[];
@@ -1493,7 +1630,7 @@ window.autoFillTeams = async function(){
   }
   await saveTournament({ teams: ST.teams });
   // Crée les docs teamRosters vides associés (cf. note dans addTeam()).
-  try { await Promise.all(ST.teams.map(t=>setDoc(doc(db,'teamRosters',t.id), { players: [], updatedAt: serverTimestamp() }))); }
+  try { await Promise.all(ST.teams.map(t=>setDoc(doc(db,'teamRosters20',t.id), { players: [], updatedAt: serverTimestamp() }))); }
   catch(e){ console.warn('Création teamRosters en lot échouée (non bloquant)', e); }
   renderTeamsPage();
 };
@@ -1520,7 +1657,7 @@ window.saveEditTeam = async function(){
   await saveTournament({ teams: ST.teams });
   closeEditTeam(); renderTeamsPage();
   if(ST.poolSchedule.length){ renderPlanningPreview(); }
-  if(ST.bracketSchedule.length){ renderTournamentPage(); }
+  if(ST.groupSchedule.length || ST.classementSchedule.length){ renderTournamentPage(); }
   if(ST.page==='T') renderTeamsSpecPage();
 };
 
@@ -1608,7 +1745,7 @@ window.printPoolSchedule = function(){
 };
 
 // ══════════════════════════════════════════════════════════
-// FICHE ÉQUIPE — programme complet (poules + phase finale)
+// FICHE ÉQUIPE — programme complet (Phase 1 + Phase 2 + Phase Finale)
 // ══════════════════════════════════════════════════════════
 function buildTeamProgram(tid){
   const rows=[];
@@ -1620,17 +1757,25 @@ function buildTeamProgram(tid){
     const myS=done?(isA?r.ga:r.gb):'', oppS=done?(isA?r.gb:r.ga):'';
     rows.push({ phase:'Poule '+m.pool, time:m.time, court:'T'+m.court, opp, myS, oppS, done });
   });
-  ST.bracketSchedule.filter(b=>{
-    const a=bracketTeam(b.m,'a'), bb=bracketTeam(b.m,'b');
-    return a===tid || bb===tid;
-  }).forEach(b=>{
-    const a=bracketTeam(b.m,'a'), bteam=bracketTeam(b.m,'b');
+  ST.groupSchedule.filter(m=>m.a===tid||m.b===tid).forEach(m=>{
+    const opp = m.a===tid?m.b:m.a;
+    const r=getGroupResult(m.matchId);
+    const done=r.ga!==''&&r.gb!=='';
+    const isA=m.a===tid;
+    const myS=done?(isA?r.ga:r.gb):'', oppS=done?(isA?r.gb:r.ga):'';
+    rows.push({ phase:'Groupe '+m.group, time:m.time, court:'T'+m.court, opp, myS, oppS, done });
+  });
+  ST.classementSchedule.filter(c=>{
+    const a=classementTeam(c.cm,'a'), b=classementTeam(c.cm,'b');
+    return a===tid || b===tid;
+  }).forEach(c=>{
+    const a=classementTeam(c.cm,'a'), bteam=classementTeam(c.cm,'b');
     const isA = a===tid;
     const opp = isA?bteam:a;
-    const r=getBracketResult(b.m);
+    const r=getClassementResult(c.cm);
     const done=r.ga!==''&&r.gb!=='';
     const myS=done?(isA?r.ga:r.gb):'', oppS=done?(isA?r.gb:r.ga):'';
-    rows.push({ phase:bracketLabel(b.m), time:b.time, court:'T'+b.court, opp, myS, oppS, done });
+    rows.push({ phase:c.label||classementLabel(c.cm), time:c.time, court:'T'+c.court, opp, myS, oppS, done });
   });
   return rows;
 }
@@ -1714,24 +1859,28 @@ window.printAllTeamSchedules = function(){
 function renderTournamentPage(){
   renderViewTabs();
   if(ST.activeView==='pools') renderPoolsView();
-  else renderBracketView();
+  else if(ST.activeView==='groups') renderGroupsView();
+  else renderClassementView();
 }
 function renderViewTabs(){
   const el=document.getElementById('viewTabs'); if(!el) return;
   el.innerHTML = `
-    <button class="rtab ${ST.activeView==='pools'?'active':''}" onclick="setView('pools')">🏊 Phase de poules</button>
-    <button class="rtab ${ST.activeView==='bracket'?'active':''}" onclick="setView('bracket')" ${ST.phase==='pools'?'disabled style="opacity:.4;cursor:not-allowed"':''}>🏆 Phase finale</button>
+    <button class="rtab ${ST.activeView==='pools'?'active':''}" onclick="setView('pools')">1️⃣ Phase 1 (Poules)</button>
+    <button class="rtab ${ST.activeView==='groups'?'active':''}" onclick="setView('groups')" ${ST.phase==='pools'?'disabled style="opacity:.4;cursor:not-allowed"':''}>2️⃣ Phase 2 (Groupes)</button>
+    <button class="rtab ${ST.activeView==='classement'?'active':''}" onclick="setView('classement')" ${(ST.phase==='pools'||ST.phase==='groups')?'disabled style="opacity:.4;cursor:not-allowed"':''}>🏆 Phase Finale</button>
   `;
 }
 window.setView = function(v){
-  if(v==='bracket' && ST.phase==='pools'){ alert('Générez d\'abord la phase finale (bouton dans le panneau Admin).'); return; }
+  if(v==='groups' && ST.phase==='pools'){ alert('Composez d\'abord les groupes de Phase 2 (bouton dans le panneau Admin).'); return; }
+  if(v==='classement' && (ST.phase==='pools'||ST.phase==='groups') && !ST.classementSchedule.length){ alert('Générez d\'abord la Phase Finale (bouton dans le panneau Admin).'); return; }
   ST.activeView=v; renderTournamentPage();
 };
 
-// ── Vue Poules ───────────────────────────────────────────
+// ── Vue Poules (Phase 1) ─────────────────────────────────
 function renderPoolsView(){
   const el=document.getElementById('poolsView'); if(!el) return;
-  const bracketEl=document.getElementById('bracketView'); if(bracketEl) bracketEl.style.display='none';
+  const groupsEl=document.getElementById('groupsView'); if(groupsEl) groupsEl.style.display='none';
+  const classementEl=document.getElementById('classementView'); if(classementEl) classementEl.style.display='none';
   el.style.display='';
 
   const bySlot={};
@@ -1862,50 +2011,173 @@ function renderPoolStandingsPanel(){
     </div>`;
 }
 
-// ── Vue Phase finale (bracket) ───────────────────────────
-function renderBracketView(){
+// ── Vue Groupes (Phase 2) ─────────────────────────────────
+function renderGroupsView(){
+  const el=document.getElementById('groupsView'); if(!el) return;
   const poolsEl=document.getElementById('poolsView'); if(poolsEl) poolsEl.style.display='none';
-  const el=document.getElementById('bracketView'); if(!el) return;
+  const classementEl=document.getElementById('classementView'); if(classementEl) classementEl.style.display='none';
   el.style.display='';
 
-  const tabsEl=document.getElementById('bracketRoundTabs');
-  if(tabsEl){
-    tabsEl.innerHTML = [1,2,3].map(r=>{
-      const matches = ST.bracketSchedule.filter(b=>b.round===r);
-      const done = matches.length && matches.every(b=>bracketMatchWinner(b.m)!=null);
-      const label = r===1?'Tour 1 (poules 3-6e)':r===2?'Tour 2':'Classement final';
-      return `<button class="rtab ${r===ST.activeBracketRound?'active':''} ${done?'done':''}" onclick="setBracketRound(${r})">${label}${done?' ✓':''}</button>`;
-    }).join('');
+  // Si les groupes sont composés mais le planning pas encore généré : on
+  // affiche la composition (équipes par groupe) avant tout.
+  if(ST.groups.W && ST.groups.W.length && !ST.groupSchedule.length){
+    const tabsEl=document.getElementById('groupSlotTabs'); if(tabsEl) tabsEl.innerHTML='';
+    const listEl = document.getElementById('groupMatchList');
+    if(listEl){
+      listEl.innerHTML = `<div class="info info-g" style="margin-bottom:10px">✓ Groupes composés — cliquez sur "Générer le planning Phase 2" ci-dessous pour créer le calendrier des matchs.</div>` +
+        ['W','X','Y','Z'].map(g=>{
+          const col=GROUP_COLORS[g];
+          return `<div style="background:var(--s1);border:1px solid ${col.main};border-radius:8px;padding:10px 14px;margin-bottom:8px">
+            <div style="font-family:'Oswald',sans-serif;font-size:13px;color:${col.main};font-weight:700;margin-bottom:6px">Groupe ${g}</div>
+            <div style="font-size:13px">${ST.groups[g].map(tName).join(' · ')}</div>
+          </div>`;
+        }).join('');
+    }
+    renderGroupStandingsPanel();
+    return;
   }
 
-  const matches = ST.bracketSchedule.filter(b=>b.round===ST.activeBracketRound);
-  const tabSlotsForRound = (ST.bracketTabSlots||[]).filter(t=>t.round===ST.activeBracketRound);
-  const listEl = document.getElementById('bracketMatchList');
+  const bySlot={};
+  ST.groupSchedule.forEach(m=>{ (bySlot[m.slot]=bySlot[m.slot]||[]).push(m); });
+  const slots=Object.keys(bySlot).map(Number).sort((a,b)=>a-b);
+  const TAB_SLOT_KEY = 'TAB';
+
+  const tabsEl=document.getElementById('groupSlotTabs');
+  if(tabsEl){
+    let html = slots.map(s=>{
+      const matches=bySlot[s];
+      const done = matches.every(m=>{ const r=getGroupResult(m.matchId); return r.ga!==''&&r.gb!==''; });
+      return `<button class="rtab ${s===ST.activeGroupRound?'active':''} ${done?'done':''}" onclick="setGroupSlot(${s})">Créneau ${s+1}${done?' ✓':''}<span class="rtab-time">${matches[0].time}</span></button>`;
+    }).join('');
+    if(ST.groupTabSlot){
+      html += `<button class="rtab ${ST.activeGroupRound===TAB_SLOT_KEY?'active':''}" onclick="setGroupSlot('${TAB_SLOT_KEY}')" style="border-color:var(--ylw)">⚽ T.A.B.<span class="rtab-time">${ST.groupTabSlot.time}</span></button>`;
+    }
+    tabsEl.innerHTML = html;
+  }
+
+  const listEl = document.getElementById('groupMatchList');
+  if(ST.activeGroupRound===TAB_SLOT_KEY){
+    if(listEl) listEl.innerHTML = groupTabSummaryHTML();
+    renderGroupStandingsPanel();
+    return;
+  }
+
+  const matches = bySlot[ST.activeGroupRound]||[];
+  if(listEl){
+    let html = matches.map(m=>{
+      const r=getGroupResult(m.matchId);
+      const needsShootout = groupMatchNeedsShootout(m.matchId, m.group);
+      return matchCardHTML('group', m.matchId, m.a, m.b, r, `Groupe ${m.group}`, m.court, m.time, needsShootout);
+    }).join('');
+    const breaksAfter = (ST.groupBreaks||[]).filter(b=>b.afterSlot===ST.activeGroupRound);
+    breaksAfter.forEach(b=>{
+      html += `<div style="background:rgba(180,60,60,.08);border:1px dashed #b43c3c;border-radius:8px;padding:10px 14px;margin-top:4px">
+        <div style="font-family:'Oswald',sans-serif;font-size:22px;font-weight:700;color:#b43c3c;margin-bottom:2px">🕐 ${b.startTime} – ${b.endTime}</div>
+        <div style="font-size:12px">☕ <strong>${b.label}</strong> (${b.duration} min) — prochain créneau après cette coupure</div>
+      </div>`;
+    });
+    listEl.innerHTML = html;
+  }
+
+  renderGroupStandingsPanel();
+}
+window.setGroupSlot = function(s){ ST.activeGroupRound=s; renderGroupsView(); };
+
+function groupTabSummaryHTML(){
+  let any=false;
+  const html = ['W','X','Y','Z'].map(g=>{
+    const groupsWithPairs = tiedGroupsWithPairsForGroup(g);
+    if(!groupsWithPairs.length) return '';
+    any=true;
+    return `<div style="background:var(--s1);border:1px solid var(--ylw);border-radius:10px;padding:12px 14px;margin-bottom:8px">
+      <div style="font-size:11px;color:var(--dim);margin-bottom:8px">Groupe ${g}</div>
+      ${groupsWithPairs.map(({group,pairs})=>`
+        <div style="margin-bottom:10px;padding:8px 10px;background:var(--s2);border-radius:8px">
+          <div style="font-size:12px;font-weight:700;color:var(--ylw);margin-bottom:6px">⚖️ Égalité parfaite : ${group.map(tName).join(' · ')}</div>
+          ${pairs.map(pair=>{
+            const r=getGroupResult(pair.matchId);
+            const m = ST.groupSchedule.find(x=>x.matchId===pair.matchId);
+            const done = r.shootout && r.shootout.ga!=null;
+            return `<div style="font-size:13px;display:flex;justify-content:space-between;align-items:center;gap:8px;padding:3px 0">
+              <span>${tName(pair.a)} – ${tName(pair.b)} ${done?`<strong style="color:var(--grn)">T.A.B. ${r.shootout.ga}-${r.shootout.gb}</strong>`:'<span style="color:var(--ylw)">⚽ T.A.B. à saisir</span>'}</span>
+              ${m?`<button class="btn btn-ghost btn-xs" onclick="setGroupSlot(${m.slot})">Aller au match (Créneau ${m.slot+1})</button>`:''}
+            </div>`;
+          }).join('')}
+        </div>`).join('')}
+    </div>`;
+  }).join('');
+  if(!any) return '<div class="info info-b">Aucune égalité parfaite détectée pour le moment (le classement de chaque groupe doit être complet pour que la détection s\'active).</div>';
+  return html;
+}
+
+const GROUP_COLORS = {
+  W: { main:'#2f6fed' }, X: { main:'#1ea672' }, Y: { main:'#d9822b' }, Z: { main:'#9b59d9' },
+};
+function renderGroupStandingsPanel(){
+  const el=document.getElementById('groupStandingsPanel'); if(!el) return;
+  el.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:10px">` +
+    ['W','X','Y','Z'].map(g=>{
+      const st=computeGroupStandings(g);
+      const col = GROUP_COLORS[g];
+      return `<div style="background:var(--s1);border:1px solid ${col.main};border-radius:8px;padding:8px 10px;overflow-x:auto">
+        <div style="font-family:'Oswald',sans-serif;font-size:13px;color:${col.main};margin-bottom:4px;font-weight:700">Groupe ${g}</div>
+        <table style="width:100%;font-size:11px;border-collapse:collapse;white-space:nowrap">
+          <thead><tr style="color:#fff;font-size:9px;background:${col.main}">
+            <th style="text-align:left;padding:4px 6px">#</th><th style="text-align:left;padding:4px 6px">Équipe</th>
+            <th style="padding:4px 6px">Pts</th><th style="padding:4px 6px">MJ</th><th style="padding:4px 6px">V</th><th style="padding:4px 6px">N</th><th style="padding:4px 6px">P</th><th style="padding:4px 6px">Bp</th><th style="padding:4px 6px">Bc</th><th style="padding:4px 6px">+/-</th>
+          </tr></thead>
+          <tbody>${st.map((s,i)=>`<tr style="border-top:1px solid var(--bdr);background:${rankRowColor(i+1)}">
+            <td style="padding:3px 6px;font-weight:700">${i+1}</td><td style="padding:3px 6px">${tName(s.id)}</td>
+            <td style="text-align:center;font-weight:700">${s.pts}</td>
+            <td style="text-align:center">${s.j}</td>
+            <td style="text-align:center">${s.g}</td>
+            <td style="text-align:center">${s.n}</td>
+            <td style="text-align:center">${s.p}</td>
+            <td style="text-align:center">${s.bp}</td>
+            <td style="text-align:center">${s.bc}</td>
+            <td style="text-align:center">${s.diff>0?'+':''}${s.diff}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>`;
+    }).join('') + `</div>`;
+}
+
+// ── Vue Phase Finale (classement direct) ─────────────────
+// ── Vue Phase Finale (matchs de classement directs) ──────
+function renderClassementView(){
+  const poolsEl=document.getElementById('poolsView'); if(poolsEl) poolsEl.style.display='none';
+  const groupsEl=document.getElementById('groupsView'); if(groupsEl) groupsEl.style.display='none';
+  const el=document.getElementById('classementView'); if(!el) return;
+  el.style.display='';
+
+  const matches = ST.classementSchedule;
+  const listEl = document.getElementById('classementMatchList');
   if(listEl){
     if(!matches.length){
-      listEl.innerHTML='<div class="info info-y">Phase finale non générée.</div>';
+      listEl.innerHTML='<div class="info info-y">Phase Finale non générée.</div>';
     } else {
       // Regroupe les matchs par créneau (slot), puis interleave avec les
-      // créneaux T.A.B. selon leur position chronologique (un tour peut
-      // désormais contenir plusieurs blocs : ex. places 9-24e, puis 3-8e +
-      // T.A.B., puis finale seule + T.A.B.).
+      // créneaux T.A.B. selon leur position chronologique : les 9 matchs de
+      // classement (places 3 à 20) d'abord, puis T.A.B., puis la Finale
+      // (1-2e place) seule sur le terrain A, puis son T.A.B. éventuel.
       const bySlot = {};
-      matches.forEach(b=>{ (bySlot[b.slot]=bySlot[b.slot]||[]).push(b); });
+      matches.forEach(c=>{ (bySlot[c.slot]=bySlot[c.slot]||[]).push(c); });
       const breaksAfter = {};
-      (ST.bracketBreaks||[]).forEach(b=>{ (breaksAfter[b.afterSlot]=breaksAfter[b.afterSlot]||[]).push(b); });
-      const allSlotNums = [...new Set([...matches.map(b=>b.slot), ...tabSlotsForRound.map(t=>t.slot)])].sort((a,b)=>a-b);
+      (ST.classementBreaks||[]).forEach(b=>{ (breaksAfter[b.afterSlot]=breaksAfter[b.afterSlot]||[]).push(b); });
+      const tabSlots = ST.classementTabSlots||[];
+      const allSlotNums = [...new Set([...matches.map(c=>c.slot), ...tabSlots.map(t=>t.slot)])].sort((a,b)=>a-b);
       let html = allSlotNums.map(s=>{
         let block = '';
         if(bySlot[s]){
-          block = bySlot[s].map(b=>{
-            const a=bracketTeam(b.m,'a'), bb=bracketTeam(b.m,'b');
-            const r=getBracketResult(b.m);
-            const label = b.label || bracketLabel(b.m);
+          block = bySlot[s].map(c=>{
+            const a=classementTeam(c.cm,'a'), b=classementTeam(c.cm,'b');
+            const r=getClassementResult(c.cm);
+            const label = c.label || classementLabel(c.cm);
             const needsShootout = r.ga!==''&&r.gb!==''&&(+r.ga===+r.gb);
-            return matchCardHTML('bracket', b.m, a, bb, r, label, b.court, b.time, needsShootout);
+            return matchCardHTML('classement', c.cm, a, b, r, label, c.court, c.time, needsShootout);
           }).join('');
         } else {
-          const tabSlot = tabSlotsForRound.find(t=>t.slot===s);
+          const tabSlot = tabSlots.find(t=>t.slot===s);
           if(tabSlot){
             block = `<div style="background:var(--ylw-bg);border:1px dashed var(--ylw);border-radius:8px;padding:10px 14px;margin:4px 0">
               <div style="font-family:'Oswald',sans-serif;font-size:22px;font-weight:700;color:var(--ylw);margin-bottom:2px">🕐 ${tabSlot.time}</div>
@@ -1925,7 +2197,6 @@ function renderBracketView(){
     }
   }
 }
-window.setBracketRound = function(r){ ST.activeBracketRound=r; renderBracketView(); };
 
 // ── Carte de match (saisie score) ────────────────────────
 const _scoreDebounce = {}; // { 'type_matchId': timeoutId }
@@ -1979,7 +2250,8 @@ window.scheduleAutoSaveScore = function(type, matchId){
     const ga=aEl.value, gb=bEl.value;
     if(ga===''||gb===''){ if(statusEl) statusEl.textContent=''; return; }
     if(type==='pool') await setPoolResult(matchId, +ga, +gb);
-    else await setBracketResult(matchId, +ga, +gb, null);
+    else if(type==='group') await setGroupResult(matchId, +ga, +gb);
+    else await setClassementResult(matchId, +ga, +gb);
     if(statusEl) statusEl.textContent='✓ Enregistré';
     refreshCurrentPage();
   }, 800);
@@ -1997,10 +2269,8 @@ window.scheduleAutoSaveShootout = function(type, matchId){
     if(ga===''||gb===''){ if(statusEl) statusEl.textContent=''; return; }
     if(+ga===+gb){ if(statusEl){ statusEl.textContent='⚠ Il faut un vainqueur (scores différents)'; statusEl.style.color='var(--red)'; } return; }
     if(type==='pool') await setPoolShootout(matchId, { ga:+ga, gb:+gb });
-    else {
-      const r = getBracketResult(matchId);
-      await setBracketResult(matchId, r.ga, r.gb, { ga:+ga, gb:+gb });
-    }
+    else if(type==='group') await setGroupShootout(matchId, { ga:+ga, gb:+gb });
+    else await setClassementShootout(matchId, { ga:+ga, gb:+gb });
     if(statusEl){ statusEl.style.color='var(--muted)'; statusEl.textContent='✓ Enregistré'; }
     refreshCurrentPage();
   }, 800);
@@ -2011,16 +2281,29 @@ window.scheduleAutoSaveShootout = function(type, matchId){
 // PAGE 5 — CLASSEMENT FINAL
 // ══════════════════════════════════════════════════════════
 function computeFinalRanking(){
-  // Le classement final se lit directement sur l'arbre du tour 3 (M25-M36)
-  const ranking = []; // [{place, teamId}]
-  const placeMap = {
-    36:{w:1,l:2}, 35:{w:3,l:4}, 34:{w:5,l:6}, 33:{w:7,l:8},
-    32:{w:9,l:10}, 31:{w:11,l:12}, 30:{w:13,l:14}, 29:{w:15,l:16},
-    28:{w:17,l:18}, 27:{w:19,l:20}, 26:{w:21,l:22}, 25:{w:23,l:24},
+  // Chaque match de classement (CLASSEMENT_MATCHES) donne directement les 2
+  // places concernées (ex: "3e-4e place") : le vainqueur prend la place haute,
+  // le perdant la place basse. Pas de cascade vainqueur/perdant à résoudre.
+  const PLACE_MAP = {
+    1:{w:9,l:10}, 2:{w:7,l:8}, 3:{w:5,l:6}, 4:{w:3,l:4},
+    5:{w:19,l:20}, 6:{w:17,l:18}, 7:{w:15,l:16}, 8:{w:13,l:14}, 9:{w:11,l:12},
+    10:{w:1,l:2}, // Finale
   };
-  Object.entries(placeMap).forEach(([m,{w,l}])=>{
-    const mm=+m;
-    const winner=bracketMatchWinner(mm), loser=bracketMatchLoser(mm);
+  const ranking = [];
+  Object.entries(PLACE_MAP).forEach(([cm,{w,l}])=>{
+    const c = +cm;
+    const a = classementTeam(c,'a'), b = classementTeam(c,'b');
+    if(!a || !b) return;
+    const r = getClassementResult(c);
+    if(r.ga==='' || r.gb==='') return;
+    const ga=+r.ga, gb=+r.gb;
+    let winner=null, loser=null;
+    if(ga>gb){ winner=a; loser=b; }
+    else if(ga<gb){ winner=b; loser=a; }
+    else if(r.shootout && r.shootout.ga!=null && r.shootout.gb!=null){
+      winner = r.shootout.ga>r.shootout.gb ? a : b;
+      loser  = winner===a ? b : a;
+    }
     if(winner) ranking.push({ place:w, teamId:winner });
     if(loser)  ranking.push({ place:l, teamId:loser });
   });
@@ -2184,7 +2467,7 @@ window.submitRoster = async function(teamId){
 
 function fmt(s){ return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); }
 function currentMatchDuration(){
-  return ST.activeView==='bracket' ? (ST.cfg.matchDurBracket||12) : (ST.cfg.matchDur||12);
+  return ST.activeView==='classement' ? (ST.cfg.matchDurClassement||13) : (ST.cfg.matchDur||13);
 }
 function updateTimerDisplay(){
   const el=document.getElementById('tmrDsp'); if(!el) return;
@@ -2414,7 +2697,7 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
 <div id="loginScreen">
   <div class="login-box">
     <div class="login-brand">⚽ Foot Entreprises</div>
-    <div class="login-sub">Challenge Inter-Entreprises · 24 équipes</div>
+    <div class="login-sub">Challenge Inter-Entreprises · 20 équipes</div>
     <div id="authMsg" style="text-align:center;font-size:13px;min-height:18px;margin-bottom:16px;color:var(--red)"></div>
 
     <!-- ══ ZONE SPECTATEURS ══ -->
@@ -2588,8 +2871,8 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
       <div class="fr">
         <div>
           <label>Nombre d'équipes</label>
-          <input type="number" id="cfg_n" value="24" min="24" max="24" step="1" readonly title="Nombre d'équipes" aria-label="Nombre d'équipes" oninput="onCfgChange()">
-          <div style="font-size:10px;color:var(--dim);margin-top:3px">🔒 Format officiel à 24 équipes (4 poules de 6)</div>
+          <input type="number" id="cfg_n" value="20" min="20" max="20" step="1" readonly title="Nombre d'équipes" aria-label="Nombre d'équipes" oninput="onCfgChange()">
+          <div style="font-size:10px;color:var(--dim);margin-top:3px">🔒 Format officiel à 20 équipes (4 poules de 5)</div>
         </div>
         <div>
           <label>Nombre de terrains</label>
@@ -2607,7 +2890,7 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
         </div>
         <div>
           <label>Durée match phase finale (min)</label>
-          <input type="number" id="cfg_matchdur_bracket" value="12" min="5" max="30" title="Durée match phase finale en minutes" aria-label="Durée match phase finale" oninput="onCfgChange()">
+          <input type="number" id="cfg_matchdur_classement" value="12" min="5" max="30" title="Durée match phase finale en minutes" aria-label="Durée match phase finale" oninput="onCfgChange()">
         </div>
         <div>
           <label>Transition entre matchs (min)</label>
@@ -2780,26 +3063,39 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
     </div>
   </div>
 
-  <!-- Onglets vue Poules/Finale -->
+  <!-- Onglets vue Phase 1 / Phase 2 / Phase Finale -->
   <div class="rtabs" id="viewTabs"></div>
 
-  <!-- VUE POULES -->
+  <!-- VUE PHASE 1 (POULES) -->
   <div id="poolsView">
     <div class="rtabs" id="poolSlotTabs"></div>
     <div id="poolMatchList"></div>
     <div class="card" style="margin-top:18px">
       <div class="card-ttl">
         <span>📊 Classements des poules (en direct)</span>
-        <button class="btn btn-b btn-xs" data-role="admin" onclick="generateBracket()">🏆 Générer la phase finale</button>
+        <button class="btn btn-b btn-xs" data-role="admin" onclick="buildGroups()">2️⃣ Composer les groupes (Phase 2)</button>
       </div>
       <div id="poolStandingsPanel"></div>
     </div>
   </div>
 
-  <!-- VUE PHASE FINALE -->
-  <div id="bracketView" style="display:none">
-    <div class="rtabs" id="bracketRoundTabs"></div>
-    <div id="bracketMatchList"></div>
+  <!-- VUE PHASE 2 (GROUPES) -->
+  <div id="groupsView" style="display:none">
+    <div class="rtabs" id="groupSlotTabs"></div>
+    <div id="groupMatchList"></div>
+    <div class="card" style="margin-top:18px">
+      <div class="card-ttl">
+        <span>📊 Classements des groupes (en direct)</span>
+        <button class="btn btn-g btn-xs" data-role="admin" onclick="buildGroupSchedule()">📅 Générer le planning Phase 2</button>
+        <button class="btn btn-b btn-xs" data-role="admin" onclick="buildClassementSchedule()">🏆 Générer la Phase Finale</button>
+      </div>
+      <div id="groupStandingsPanel"></div>
+    </div>
+  </div>
+
+  <!-- VUE PHASE FINALE (CLASSEMENT DIRECT) -->
+  <div id="classementView" style="display:none">
+    <div id="classementMatchList"></div>
   </div>
 
 </div>
@@ -2861,10 +3157,11 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
 
   <div class="rules-section">
     <h4>Article 3 : Déroulement Général et Ponctualité</h4>
-    <p>Le tournoi se déroule en deux phases :</p>
+    <p>Le tournoi se déroule en trois phases :</p>
     <ul>
-      <li>Phase 1 : Formule championnat — 4 poules de 6 équipes.</li>
-      <li>Phase Finale : Format à élimination directe selon le classement de la phase 1.</li>
+      <li>Phase 1 : Formule championnat — 4 poules de 5 équipes.</li>
+      <li>Phase 2 : Formule championnat — 4 groupes de 5 équipes établis en fonction du classement dans chaque poule de la Phase 1.</li>
+      <li>Phase Finale : Matches de classement établis en fonction du classement dans chaque groupe de la Phase 2.</li>
     </ul>
     <p>La ponctualité est impérative. Les équipes doivent se présenter au terrain désigné 4 minutes avant le début de leur match. En cas d'absence, sauf force majeure dûment constatée par l'organisation, l'équipe est déclarée forfait. Le match est alors considéré comme perdu (voir Article 5 pour l'attribution des points).</p>
     <p>La durée des matches est gérée par la table de marque. L'arbitre central est seul juge du temps additionnel à accorder.</p>
@@ -2886,8 +3183,8 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
   </div>
 
   <div class="rules-section">
-    <h4>Article 5 : Attribution des Points (Phase 1)</h4>
-    <p>Lors de la phase de poules, les points sont attribués comme suit :</p>
+    <h4>Article 5 : Attribution des Points (Phases 1 et 2)</h4>
+    <p>Lors des phases de championnat (Phase 1 et Phase 2), les points sont attribués comme suit :</p>
     <ul>
       <li>Match gagné : 3 points</li>
       <li>Match nul : 1 point</li>
@@ -2898,9 +3195,9 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
 
   <div class="rules-section">
     <h4>Article 6 : Phase 1 — Format des Poules</h4>
-    <p>Les 24 équipes sont réparties en 4 poules (A, B, C, D) de 6 équipes. Chaque équipe affronte une fois les autres équipes de sa poule.</p>
-    <p>Durée des matches : 1 période unique de 12 minutes.</p>
-    <p>Départage en cas d'égalité de points, dans l'ordre :</p>
+    <p>Les 20 équipes sont réparties en 4 poules (A, B, C, D) de 5 équipes. Chaque équipe affronte une fois les autres équipes de sa poule.</p>
+    <p>Durée des matches : 1 période unique de 13 minutes.</p>
+    <p>En cas d'égalité de points à l'issue des matchs de la Phase 1, les critères suivants seront appliqués, dans l'ordre indiqué, pour établir le classement définitif :</p>
     <ul>
       <li>Goal-average particulier (résultat lors de la rencontre directe entre les deux équipes).</li>
       <li>Goal-average général (différence entre buts marqués et buts encaissés).</li>
@@ -2910,20 +3207,41 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
   </div>
 
   <div class="rules-section">
-    <h4>Article 7 : Phase Finale</h4>
-    <p>La répartition pour la phase finale est la suivante :</p>
-    <ul>
-      <li>Les 1ers et 2èmes de chaque poule jouent les places de 1 à 8.</li>
-      <li>Les 3èmes et 4èmes de chaque poule jouent les places de 9 à 16.</li>
-      <li>Les 5èmes et 6èmes de chaque poule jouent les places de 17 à 24.</li>
-    </ul>
-    <p>Format à élimination directe sur 3 tours (36 matchs au total), aboutissant à un classement complet de la 1ère à la 24ème place.</p>
+    <h4>Article 7 : Phase 2 — Format des Groupes</h4>
+    <p>Les 20 équipes sont réparties en 4 groupes (W, X, Y, Z) de 5 équipes, recomposés selon le classement de la Phase 1 :</p>
+    <table class="stbl" style="width:100%;margin:10px 0">
+      <thead><tr><th>Groupe W</th><th>Groupe X</th><th>Groupe Y</th><th>Groupe Z</th></tr></thead>
+      <tbody>
+        <tr><td>1er poule A</td><td>1er poule C</td><td>4ème poule A</td><td>4ème poule C</td></tr>
+        <tr><td>1er poule B</td><td>1er poule D</td><td>4ème poule B</td><td>4ème poule D</td></tr>
+        <tr><td>2ème poule C</td><td>2ème poule A</td><td>5ème poule C</td><td>5ème poule A</td></tr>
+        <tr><td>2ème poule D</td><td>2ème poule B</td><td>5ème poule D</td><td>5ème poule B</td></tr>
+        <tr><td>1er des 3èmes</td><td>2ème des 3èmes</td><td>3ème des 3èmes</td><td>4ème des 3èmes</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:11px;color:var(--muted)">Le classement entre les 4 équipes classées 3èmes de leur poule (A, B, C, D) applique les mêmes critères que l'Article 6, à l'exception du goal-average particulier (ces équipes ne se sont jamais affrontées en Phase 1) : points, puis goal-average général, puis meilleure attaque, puis tirs au but en cas d'égalité parfaite persistante.</p>
+    <p>Chaque équipe affronte une fois les autres équipes de son groupe. Durée des matches : 1 période unique de 13 minutes.</p>
+    <p>En cas d'égalité de points à l'issue des matchs de la Phase 2, les mêmes critères que l'Article 6 sont appliqués, dans le même ordre, au sein de chaque groupe.</p>
   </div>
 
   <div class="rules-section">
-    <h4>Article 8 : Déroulement des Matches et Tirs au but</h4>
-    <p>Durée des matches : 1 période unique de 12 minutes.</p>
-    <p>En cas d'égalité à l'issue du temps réglementaire : la victoire est déterminée directement par une séance de tirs au but.</p>
+    <h4>Article 7 bis : Phase Finale — Matches de Classement</h4>
+    <p>Le classement final s'établit à partir du rang de chaque équipe dans son groupe (W, X, Y, Z) à l'issue de la Phase 2, par des matches de classement directs (sans élimination) :</p>
+    <table class="stbl" style="width:100%;margin:10px 0">
+      <thead><tr><th>Places 9-10</th><th>Places 7-8</th><th>Places 5-6</th><th>Places 3-4</th><th>Finale (1-2)</th></tr></thead>
+      <tbody><tr><td>5e W – 5e X</td><td>4e W – 4e X</td><td>3e W – 3e X</td><td>2e W – 2e X</td><td>1er W – 1er X</td></tr></tbody>
+    </table>
+    <table class="stbl" style="width:100%;margin:10px 0">
+      <thead><tr><th>Places 19-20</th><th>Places 17-18</th><th>Places 15-16</th><th>Places 13-14</th><th>Places 11-12</th></tr></thead>
+      <tbody><tr><td>5e Y – 5e Z</td><td>4e Y – 4e Z</td><td>3e Y – 3e Z</td><td>2e Y – 2e Z</td><td>1er Y – 1er Z</td></tr></tbody>
+    </table>
+    <p>Les 9 matches de classement (places 3 à 20) se jouent en parallèle sur les terrains disponibles. La Finale (places 1-2) se joue ensuite, seule, sur le terrain A.</p>
+    <p>Durée des matches : 1 période unique de 13 minutes.</p>
+    <p>En cas d'égalité à l'issue du temps réglementaire : la victoire est déterminée directement par une séance de tirs au but selon la procédure de l'Article 8.</p>
+  </div>
+
+  <div class="rules-section">
+    <h4>Article 8 : Déroulement des Tirs au but</h4>
     <p>Procédure des tirs au but : tous les joueurs présents et inscrits sur la feuille de match peuvent tirer un penalty. Chaque équipe exécute alternativement un tir au but jusqu'à ce qu'une équipe marque un but de plus que l'autre équipe, à égalité de tirs.</p>
   </div>
 
