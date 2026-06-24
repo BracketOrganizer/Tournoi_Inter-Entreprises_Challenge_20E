@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0f4a1f">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚽</text></svg>">
-<title>⚽ Foot Entreprises Challenge — 20 équipes</title>
+<title>⚽ Challenge Inter-Entreprises — 20 équipes</title>
 <link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;600;700;900&family=Oswald:wght@400;500;600;700&display=swap" rel="stylesheet">
 
 <!-- ══════════════════════════════════════════════════════════
@@ -58,6 +58,9 @@ let USER_ROLE    = null;
 let MANAGER_TEAM_ID = null; // équipe assignée si USER_ROLE === 'manager'
 let unsubTournament = null;
 let unsubRoster = null;
+let unsubLiveWatch = null;
+let liveWatchIv = null; // polling de secours (mobile en veille)
+let pendingSpecTarget = null;
 
 const ST = {
   page:1, prevPage:1, rulesOpen:false,
@@ -296,6 +299,8 @@ onAuthStateChanged(auth, async (user)=>{
 function unsubAll(){
   if(unsubTournament){ unsubTournament(); unsubTournament=null; }
   if(unsubRoster){ unsubRoster(); unsubRoster=null; }
+  stopLiveWatch();
+  startLiveWatch();
 }
 
 window.loginEmail = async function(){
@@ -332,8 +337,13 @@ function showAuthMsg(msg,color){
   el.textContent=msg; el.style.color = color==='red' ? 'var(--red)' : 'var(--grn)';
 }
 
-window.enterLiveModeAndGo = function(target){
+window.enterLiveModeAndGo = async function(target){
+  try {
+    const snap = await getDoc(doc(db,'foottournoi20','status'));
+    if(snap.exists()) handleLiveOpenChange(snap.data().liveOpen === true);
+  } catch(e){ console.warn('enterLiveModeAndGo: relecture liveOpen échouée', e); }
   if(target !== 'R' && !ST.liveOpen){
+    pendingSpecTarget = target;
     const overlay = document.getElementById('liveClosedOverlay');
     if(overlay) overlay.style.display='flex';
     return;
@@ -351,10 +361,82 @@ window.enterLiveModeAndGo = function(target){
   else { goTo(target); }
 };
 
+function handleLiveOpenChange(nowOpen){
+  const wasOpen = ST.liveOpen;
+  ST.liveOpen = nowOpen;
+  updateLiveToggleBtn();
+  if(wasOpen && !ST.liveOpen){
+    const appScreen = document.getElementById('appScreen');
+    const isInApp = appScreen && appScreen.style.display !== 'none';
+    if(isInApp && (USER_ROLE === 'spectator' || USER_ROLE === null)){
+      const overlay = document.getElementById('liveClosedOverlay');
+      if(overlay) overlay.style.display = 'flex';
+      pendingSpecTarget = typeof ST.page === 'number' ? ST.page : 4;
+    }
+    return;
+  }
+  if(!wasOpen && ST.liveOpen && pendingSpecTarget !== null){
+    const overlay = document.getElementById('liveClosedOverlay');
+    if(overlay) overlay.style.display = 'none';
+    const target = pendingSpecTarget;
+    pendingSpecTarget = null;
+    if(USER_ROLE === 'spectator'){
+      if(target === 'R') toggleRules();
+      else goTo(target === 'T' ? 'T' : target);
+    } else {
+      enterLiveModeAndGo(target);
+    }
+  }
+}
+
+function startLiveWatch(){
+  if(unsubLiveWatch) return;
+  unsubLiveWatch = onSnapshot(doc(db,'foottournoi20','status'), (snap)=>{
+    if(!snap.exists()) return;
+    handleLiveOpenChange(snap.data().liveOpen === true);
+  }, (e)=>{ console.warn('startLiveWatch', e); });
+  if(!liveWatchIv){
+    liveWatchIv = setInterval(async ()=>{
+      try {
+        const snap = await getDoc(doc(db,'foottournoi20','status'));
+        if(snap.exists()) handleLiveOpenChange(snap.data().liveOpen === true);
+      } catch(e){}
+    }, 4000);
+  }
+}
+function stopLiveWatch(){
+  if(unsubLiveWatch){ unsubLiveWatch(); unsubLiveWatch=null; }
+  if(liveWatchIv){ clearInterval(liveWatchIv); liveWatchIv=null; }
+}
+startLiveWatch();
+
+window.spectatorGoLive = async function(n){
+  try {
+    const snap = await getDoc(doc(db,'foottournoi20','status'));
+    if(snap.exists()) handleLiveOpenChange(snap.data().liveOpen === true);
+  } catch(e){ console.warn('spectatorGoLive: relecture liveOpen échouée', e); }
+  if(n!=='R' && isLiveBlocked()){
+    pendingSpecTarget = n;
+    const overlay = document.getElementById('liveClosedOverlay');
+    if(overlay) overlay.style.display='flex';
+    return;
+  }
+  if(n==='T') goTo('T'); else goTo(n);
+};
+
+document.addEventListener('visibilitychange', async ()=>{
+  if(document.visibilityState !== 'visible') return;
+  try {
+    const snap = await getDoc(doc(db,'foottournoi20','status'));
+    if(snap.exists()) handleLiveOpenChange(snap.data().liveOpen === true);
+  } catch(e){ console.warn('resync visibilitychange', e); }
+});
+
 // ══════════════════════════════════════════════════════════
 // PERSISTANCE FIRESTORE — doc unique 'foottournoi/current'
 // ══════════════════════════════════════════════════════════
 function subscribeToTournament(){
+  if(!unsubLiveWatch || !liveWatchIv) startLiveWatch();
   unsubTournament = onSnapshot(doc(db,'foottournoi20','current'), (snap)=>{
     if(!snap.exists()) return;
     const data=snap.data();
@@ -373,13 +455,18 @@ function subscribeToTournament(){
     ST.classementBreaks   = data.classementBreaks || [];
     if(data.results)         ST.results         = data.results;
     if(data.phase)           ST.phase           = data.phase;
-    ST.liveOpen = data.liveOpen === true;
+    handleLiveOpenChange(data.liveOpen === true);
     refreshCurrentPage();
-  });
+  }, (e)=>{ console.warn('subscribeToTournament', e); });
 }
 async function saveTournament(partial){
   if(!isAdmin() && !isScorer()) return;
-  try { await setDoc(doc(db,'foottournoi20','current'), { ...partial, updatedAt: serverTimestamp() }, { merge:true }); }
+  try {
+    await setDoc(doc(db,'foottournoi20','current'), { ...partial, updatedAt: serverTimestamp() }, { merge:true });
+    if('liveOpen' in partial){
+      await setDoc(doc(db,'foottournoi20','status'), { liveOpen: partial.liveOpen }, { merge:true });
+    }
+  }
   catch(e){ console.error('saveTournament', e); alert('Erreur de sauvegarde : '+e.message); }
 }
 function refreshCurrentPage(){
@@ -635,13 +722,24 @@ window.buildGroupSchedule = function(){
 
   // Reprend les coupures déjà consommées pendant la Phase 1, pour ne pas les
   // réappliquer, puis poursuit la timeline sur la Phase 2.
-  const phase1Times = ST.poolSchedule.map(m=>m.time).concat(ST.poolTabSlot?[ST.poolTabSlot.time]:[]);
-  const appliedBreaks = appliedBreaksFromSchedule(phase1Times, cfg.breaks);
+  const tabDurMin1 = cfg.tabDuration||10;
+  const fmt1 = mins => { const hh=Math.floor(mins/60)%24, mm=mins%60; return String(hh).padStart(2,'0')+':'+String(mm).padStart(2,'0'); };
   const lastPhase1Time = ST.poolTabSlot ? ST.poolTabSlot.time
     : (ST.poolSchedule.length ? ST.poolSchedule[ST.poolSchedule.length-1].time : cfg.start);
-  const start = addMinutes(lastPhase1Time, cfg.matchDur+cfg.tt);
+  const lastPhase1EndMin = timeToMinutes(lastPhase1Time) + tabDurMin1;
+  const naturalStartMin1 = lastPhase1EndMin + cfg.tt;
+  const appliedBreaksG = new Set();
+  (ST.poolBreaks||[]).forEach(pb=>{
+    const matched = (cfg.breaks||[]).find(c=>c.duration===pb.duration && (c.label||'Coupure')===(pb.label||'Coupure'));
+    if(matched) appliedBreaksG.add(matched.time+'_'+matched.duration);
+  });
+  const allKnownBreaksG = [...(ST.poolBreaks||[])];
+  const latestBreakEndG = allKnownBreaksG
+    .filter(b=>timeToMinutes(b.startTime) >= lastPhase1EndMin - tabDurMin1)
+    .reduce((max,b)=>Math.max(max, timeToMinutes(b.endTime)), naturalStartMin1);
+  const start = fmt1(latestBreakEndG + cfg.tt);
 
-  const { times: slotTimes, insertedBreaks } = computeSlotTimes(start, slotDurations, totalSlots, cfg.breaks, appliedBreaks);
+  const { times: slotTimes, insertedBreaks } = computeSlotTimes(start, slotDurations, totalSlots, cfg.breaks, appliedBreaksG);
 
   const finalSchedule = rawSchedule.map(m=>({ ...m, time: slotTimes[m.slot] }));
 
@@ -984,9 +1082,36 @@ window.buildClassementSchedule = function(){
 
   // Départ de la Phase Finale = juste après le dernier créneau de la Phase 2
   // (TAB de phase 2 inclus), en continuité de la même timeline.
+  const tabDurMin2 = cfg.tabDuration||10;
+  const fmt2 = mins => { const hh=Math.floor(mins/60)%24, mm=mins%60; return String(hh).padStart(2,'0')+':'+String(mm).padStart(2,'0'); };
   const lastGroupTime = ST.groupTabSlot ? ST.groupTabSlot.time
     : (ST.groupSchedule.length ? ST.groupSchedule[ST.groupSchedule.length-1].time : cfg.start);
-  const start = addMinutes(lastGroupTime, cfg.matchDur+cfg.tt);
+  const lastGroupEndMin = timeToMinutes(lastGroupTime) + tabDurMin2;
+  const naturalStartMin2 = lastGroupEndMin + cfg.tt;
+
+  // Pauses déjà insérées pendant Phase 1 + Phase 2
+  const appliedBreaksReliable2 = new Set();
+  [...(ST.poolBreaks||[]), ...(ST.groupBreaks||[])].forEach(pb=>{
+    const matched = (cfg.breaks||[]).find(c=>c.duration===pb.duration && (c.label||'Coupure')===(pb.label||'Coupure'));
+    if(matched) appliedBreaksReliable2.add(matched.time+'_'+matched.duration);
+  });
+  // Pauses de transition non encore insérées
+  let classStartMin = naturalStartMin2;
+  const pendingBreaksSorted = (cfg.breaks||[]).slice().sort((a,b)=>timeToMinutes(a.time)-timeToMinutes(b.time));
+  for(const brk of pendingBreaksSorted){
+    const key = brk.time+'_'+brk.duration;
+    if(appliedBreaksReliable2.has(key)) continue;
+    if(timeToMinutes(brk.time) <= naturalStartMin2){
+      appliedBreaksReliable2.add(key);
+      classStartMin += brk.duration;
+    }
+  }
+  // Fin réelle de la dernière pause couvrant la transition
+  const allKnownBreaks2 = [...(ST.poolBreaks||[]), ...(ST.groupBreaks||[])];
+  const latestBreakEnd2 = allKnownBreaks2
+    .filter(b=>timeToMinutes(b.startTime) >= lastGroupEndMin - tabDurMin2)
+    .reduce((max,b)=>Math.max(max, timeToMinutes(b.endTime)), naturalStartMin2);
+  const start = fmt2(latestBreakEnd2 + cfg.tt);
 
   const finalMatch = CLASSEMENT_MATCHES.find(c=>c.isFinal);
   const restMatches = CLASSEMENT_MATCHES.filter(c=>!c.isFinal); // 9 matchs, places 3e à 20e
@@ -1024,12 +1149,7 @@ window.buildClassementSchedule = function(){
 
   const totalSlots = slotIdx;
   // Reprend les coupures déjà consommées pendant Phase 1 + Phase 2.
-  const priorTimes = ST.poolSchedule.map(m=>m.time)
-    .concat(ST.poolTabSlot?[ST.poolTabSlot.time]:[])
-    .concat(ST.groupSchedule.map(m=>m.time))
-    .concat(ST.groupTabSlot?[ST.groupTabSlot.time]:[]);
-  const appliedBreaks = appliedBreaksFromSchedule(priorTimes, cfg.breaks);
-  const { times: slotTimes, insertedBreaks } = computeSlotTimes(start, slotDurations, totalSlots, cfg.breaks, appliedBreaks);
+  const { times: slotTimes, insertedBreaks } = computeSlotTimes(start, slotDurations, totalSlots, cfg.breaks, appliedBreaksReliable2);
 
   const schedule = rawSchedule.map(m=>({ ...m, time: slotTimes[m.slot] }));
   const tabSlotsWithTime = tabSlots.map(t=>({ ...t, time: slotTimes[t.slot] }));
@@ -1226,9 +1346,9 @@ window.toggleAdminPanel = function(){
 };
 window.toggleLiveOpen = async function(){
   if(!isAdmin()) return;
-  ST.liveOpen = !ST.liveOpen;
-  await saveTournament({ liveOpen: ST.liveOpen });
-  updateLiveToggleBtn();
+  const newVal = !ST.liveOpen;
+  handleLiveOpenChange(newVal);
+  await saveTournament({ liveOpen: newVal });
 };
 function updateLiveToggleBtn(){
   const btn=document.getElementById('liveToggleBtn');
@@ -2340,7 +2460,7 @@ window.printFinalRanking = function(){
   win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Classement Final</title>
   <style>*{box-sizing:border-box;margin:0;padding:0} body{font-family:Arial;padding:20px} table{width:100%;border-collapse:collapse} th{background:#0f4a1f;color:#fff;padding:8px} td{border-bottom:1px solid #ddd}
   @media print{@page{margin:10mm} .noprint{display:none!important} th{background:#0f4a1f!important;color:#fff!important} html{-webkit-print-color-adjust:exact}}</style>
-  </head><body><h2>⚽ Classement Final — Foot Entreprises Challenge</h2>
+  </head><body><h2>⚽ Classement Final — Challenge Inter-Entreprises</h2>
   <table><thead><tr><th>Place</th><th>Équipe</th></tr></thead><tbody>${rows}</tbody></table>
   <div class="noprint" style="margin-top:14px"><button onclick="window.print()">🖨 Imprimer</button></div>
   </body></html>`);
