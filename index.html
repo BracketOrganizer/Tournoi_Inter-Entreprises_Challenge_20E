@@ -594,8 +594,11 @@ window.buildGroupSchedule = function(){
   let slotIdx=0;
 
   // ── Round 1 : demi-finales (10 matchs : 2 par tableau) ──
+  // Ordre inversé : on commence par les tableaux de fin de classement (T5)
+  // pour terminer par le Tableau 1 (places 1-2), joué en dernier.
+  const BRACKETS_SCHEDULE_ORDER = BRACKETS.slice().reverse(); // [T5,T4,T3,T2,T1]
   const semiMatches=[];
-  BRACKETS.forEach(b=>{
+  BRACKETS_SCHEDULE_ORDER.forEach(b=>{
     const [a1,a2,a3,a4] = groups[b];
     semiMatches.push({ bracket:b, round:'semi1', a:a1, b2:a2 });
     semiMatches.push({ bracket:b, round:'semi2', a:a3, b2:a4 });
@@ -614,11 +617,12 @@ window.buildGroupSchedule = function(){
   slotIdx++;
 
   // ── Round 2 : finales + petites finales (10 matchs : 2 par tableau) ──
+  // Même ordre inversé : Tableau 5 d'abord, Tableau 1 (Finale 1ère-2e place) en tout dernier.
   // Les équipes (a,b) ne sont pas connues à l'avance (elles dépendent du
   // résultat des demi-finales) : on réserve seulement le créneau/terrain ;
   // les noms s'affichent dynamiquement une fois les demi-finales jouées.
   const finalMatches=[];
-  BRACKETS.forEach(b=>{
+  BRACKETS_SCHEDULE_ORDER.forEach(b=>{
     finalMatches.push({ bracket:b, round:'final' });
     finalMatches.push({ bracket:b, round:'petite' });
   });
@@ -762,7 +766,23 @@ function findTiedGroupsGeneric(ids, schedule, groupKey, groupField, resultPrefix
     const key = s.pts+'_'+s.diff+'_'+s.bp;
     (groups[key]=groups[key]||[]).push(s.id);
   });
-  return Object.values(groups).filter(g=>g.length>=2);
+  // Pour un groupe de 2 équipes à égalité parfaite (pts/diff/bp), si elles se
+  // sont affrontées directement avec un résultat décisif (pas de nul), le
+  // Goal-average particulier (Article 6, 1er critère) les départage déjà :
+  // pas besoin de T.A.B. dans ce cas. Pour 3 équipes ou plus, ce critère ne
+  // s'applique pas (il ne concerne qu'une confrontation directe entre 2
+  // équipes), donc le T.A.B. reste nécessaire si pts/diff/bp restent égaux.
+  return Object.values(groups).filter(g=>{
+    if(g.length<2) return false;
+    if(g.length===2){
+      const direct = matches.find(m=>(m.a===g[0]&&m.b===g[1])||(m.a===g[1]&&m.b===g[0]));
+      if(direct){
+        const r = getPhaseResult(resultPrefix, direct.matchId);
+        if(r.ga!=='' && r.gb!=='' && +r.ga!==+r.gb) return false; // résultat décisif → déjà départagé
+      }
+    }
+    return true;
+  });
 }
 function tiedPairsForGroupGeneric(ids, schedule, groupKey, groupField, resultPrefix){
   const groups = findTiedGroupsGeneric(ids, schedule, groupKey, groupField, resultPrefix);
@@ -2856,7 +2876,10 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
     <div class="card" style="margin-top:18px">
       <div class="card-ttl">
         <span>📊 Classement des tableaux (en direct)</span>
-        <button class="btn btn-g btn-xs" data-role="admin" onclick="buildGroupSchedule()">📅 Générer le planning Phase 2</button>
+        <span style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-g btn-xs" data-role="admin" onclick="buildGroupSchedule()">📅 Générer le planning Phase 2</button>
+          <button class="btn btn-b btn-xs" onclick="goTo(5)">🏆 Classement final</button>
+        </span>
       </div>
       <div id="groupStandingsPanel"></div>
     </div>
