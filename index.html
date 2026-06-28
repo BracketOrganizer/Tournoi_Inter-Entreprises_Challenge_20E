@@ -2237,7 +2237,7 @@ window.submitRoster = async function(teamId){
 
 function fmt(s){ return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); }
 function currentMatchDuration(){
-  return ST.activeView==='classement' ? (ST.cfg.matchDurClassement||13) : (ST.cfg.matchDur||13);
+  return ST.cfg.matchDur||13;
 }
 function updateTimerDisplay(){
   const el=document.getElementById('tmrDsp'); if(!el) return;
@@ -2843,29 +2843,23 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
     <div class="card" style="margin-top:18px">
       <div class="card-ttl">
         <span>📊 Classements des poules (en direct)</span>
-        <button class="btn btn-b btn-xs" data-role="admin" onclick="buildGroups()">2️⃣ Composer les groupes (Phase 2)</button>
+        <button class="btn btn-b btn-xs" data-role="admin" onclick="buildGroups()">2️⃣ Composer les tableaux (Phase 2)</button>
       </div>
       <div id="poolStandingsPanel"></div>
     </div>
   </div>
 
-  <!-- VUE PHASE 2 (GROUPES) -->
+  <!-- VUE PHASE 2 (TABLEAUX À ÉLIMINATION) -->
   <div id="groupsView" style="display:none">
     <div class="rtabs" id="groupSlotTabs"></div>
     <div id="groupMatchList"></div>
     <div class="card" style="margin-top:18px">
       <div class="card-ttl">
-        <span>📊 Classements des groupes (en direct)</span>
+        <span>📊 Classement des tableaux (en direct)</span>
         <button class="btn btn-g btn-xs" data-role="admin" onclick="buildGroupSchedule()">📅 Générer le planning Phase 2</button>
-        <button class="btn btn-b btn-xs" data-role="admin" onclick="buildClassementSchedule()">🏆 Générer la Phase Finale</button>
       </div>
       <div id="groupStandingsPanel"></div>
     </div>
-  </div>
-
-  <!-- VUE PHASE FINALE (CLASSEMENT DIRECT) -->
-  <div id="classementView" style="display:none">
-    <div id="classementMatchList"></div>
   </div>
 
 </div>
@@ -2873,6 +2867,7 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
 
 <!-- ══ PAGE 5 — CLASSEMENT FINAL ══ -->
 <div class="page" id="page5">
+
 <div class="wrap">
   <div class="sec-ttl">🏆 Classement Final</div>
   <div id="finalInfo"></div>
@@ -2927,11 +2922,10 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
 
   <div class="rules-section">
     <h4>Article 3 : Déroulement Général et Ponctualité</h4>
-    <p>Le tournoi se déroule en trois phases :</p>
+    <p>Le tournoi se déroule en deux phases :</p>
     <ul>
       <li>Phase 1 : Formule championnat — 4 poules de 5 équipes.</li>
-      <li>Phase 2 : Formule championnat — 4 groupes de 5 équipes établis en fonction du classement dans chaque poule de la Phase 1.</li>
-      <li>Phase Finale : Matches de classement établis en fonction du classement dans chaque groupe de la Phase 2.</li>
+      <li>Phase 2 : 5 tableaux à élimination directe de 4 équipes chacun, composés selon le classement de chaque poule de la Phase 1 (Tableau 1 = les 1ers de poule, places 1 à 4 ; Tableau 2 = les 2es, places 5 à 8 ; Tableau 3 = les 3es, places 9 à 12 ; Tableau 4 = les 4es, places 13 à 16 ; Tableau 5 = les 5es, places 17 à 20).</li>
     </ul>
     <p>La ponctualité est impérative. Les équipes doivent se présenter au terrain désigné 4 minutes avant le début de leur match. En cas d'absence, sauf force majeure dûment constatée par l'organisation, l'équipe est déclarée forfait. Le match est alors considéré comme perdu (voir Article 5 pour l'attribution des points).</p>
     <p>La durée des matches est gérée par la table de marque. L'arbitre central est seul juge du temps additionnel à accorder.</p>
@@ -2953,8 +2947,8 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
   </div>
 
   <div class="rules-section">
-    <h4>Article 5 : Attribution des Points (Phases 1 et 2)</h4>
-    <p>Lors des phases de championnat (Phase 1 et Phase 2), les points sont attribués comme suit :</p>
+    <h4>Article 5 : Attribution des Points (Phase 1)</h4>
+    <p>Lors de la phase de championnat (Phase 1 — poules), les points sont attribués comme suit :</p>
     <ul>
       <li>Match gagné : 3 points</li>
       <li>Match nul : 1 point</li>
@@ -2977,37 +2971,32 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
   </div>
 
   <div class="rules-section">
-    <h4>Article 7 : Phase 2 — Format des Groupes</h4>
-    <p>Les 20 équipes sont réparties en 4 groupes (W, X, Y, Z) de 5 équipes, recomposés selon le classement de la Phase 1 :</p>
+    <h4>Article 7 : Phase 2 — Tableaux à Élimination Directe</h4>
+    <p>À l'issue de la Phase 1, chaque poule (A, B, C, D) fournit un classement de ses 5 équipes (1ère à 5e). Les 20 équipes sont alors réparties en 5 tableaux de 4 équipes, selon leur rang de poule :</p>
     <table class="stbl" style="width:100%;margin:10px 0">
-      <thead><tr><th>Groupe W</th><th>Groupe X</th><th>Groupe Y</th><th>Groupe Z</th></tr></thead>
+      <thead><tr><th>Tableau</th><th>Équipes</th><th>Places en jeu</th></tr></thead>
       <tbody>
-        <tr><td>1er poule A</td><td>1er poule C</td><td>4ème poule A</td><td>4ème poule C</td></tr>
-        <tr><td>1er poule B</td><td>1er poule D</td><td>4ème poule B</td><td>4ème poule D</td></tr>
-        <tr><td>2ème poule C</td><td>2ème poule A</td><td>5ème poule C</td><td>5ème poule A</td></tr>
-        <tr><td>2ème poule D</td><td>2ème poule B</td><td>5ème poule D</td><td>5ème poule B</td></tr>
-        <tr><td>1er des 3èmes</td><td>2ème des 3èmes</td><td>3ème des 3èmes</td><td>4ème des 3èmes</td></tr>
+        <tr><td>Tableau 1</td><td>1ère de poule A, B, C, D</td><td>1 à 4</td></tr>
+        <tr><td>Tableau 2</td><td>2e de poule A, B, C, D</td><td>5 à 8</td></tr>
+        <tr><td>Tableau 3</td><td>3e de poule A, B, C, D</td><td>9 à 12</td></tr>
+        <tr><td>Tableau 4</td><td>4e de poule A, B, C, D</td><td>13 à 16</td></tr>
+        <tr><td>Tableau 5</td><td>5e de poule A, B, C, D</td><td>17 à 20</td></tr>
       </tbody>
     </table>
-    <p style="font-size:11px;color:var(--muted)">Le classement entre les 4 équipes classées 3èmes de leur poule (A, B, C, D) applique les mêmes critères que l'Article 6, à l'exception du goal-average particulier (ces équipes ne se sont jamais affrontées en Phase 1) : points, puis goal-average général, puis meilleure attaque, puis tirs au but en cas d'égalité parfaite persistante.</p>
-    <p>Chaque équipe affronte une fois les autres équipes de son groupe. Durée des matches : 1 période unique de 13 minutes.</p>
-    <p>En cas d'égalité de points à l'issue des matchs de la Phase 2, les mêmes critères que l'Article 6 sont appliqués, dans le même ordre, au sein de chaque groupe.</p>
+    <p>Dans chaque tableau, le format est à élimination directe :</p>
+    <ul>
+      <li>Demi-finale 1 : équipe de la poule A contre équipe de la poule B.</li>
+      <li>Demi-finale 2 : équipe de la poule C contre équipe de la poule D.</li>
+      <li>Finale : vainqueur de la demi-finale 1 contre vainqueur de la demi-finale 2 — attribue les 2 places hautes du tableau (ex : places 1 et 2 pour le Tableau 1).</li>
+      <li>Petite finale : perdant de la demi-finale 1 contre perdant de la demi-finale 2 — attribue les 2 places basses du tableau (ex : places 3 et 4 pour le Tableau 1).</li>
+    </ul>
+    <p>Chaque équipe joue donc exactement 2 matches en Phase 2 (1 demi-finale, puis la finale ou la petite finale selon son résultat). Avec les 4 matches de poule de la Phase 1, chaque équipe joue 6 matches au total sur le tournoi. Durée des matches : 1 période unique de 13 minutes.</p>
+    <p>Le classement final (places 1 à 20) découle directement des résultats des 5 tableaux, sans phase de classement supplémentaire.</p>
   </div>
 
   <div class="rules-section">
-    <h4>Article 7 bis : Phase Finale — Matches de Classement</h4>
-    <p>Le classement final s'établit à partir du rang de chaque équipe dans son groupe (W, X, Y, Z) à l'issue de la Phase 2, par des matches de classement directs (sans élimination) :</p>
-    <table class="stbl" style="width:100%;margin:10px 0">
-      <thead><tr><th>Places 9-10</th><th>Places 7-8</th><th>Places 5-6</th><th>Places 3-4</th><th>Finale (1-2)</th></tr></thead>
-      <tbody><tr><td>5e W – 5e X</td><td>4e W – 4e X</td><td>3e W – 3e X</td><td>2e W – 2e X</td><td>1er W – 1er X</td></tr></tbody>
-    </table>
-    <table class="stbl" style="width:100%;margin:10px 0">
-      <thead><tr><th>Places 19-20</th><th>Places 17-18</th><th>Places 15-16</th><th>Places 13-14</th><th>Places 11-12</th></tr></thead>
-      <tbody><tr><td>5e Y – 5e Z</td><td>4e Y – 4e Z</td><td>3e Y – 3e Z</td><td>2e Y – 2e Z</td><td>1er Y – 1er Z</td></tr></tbody>
-    </table>
-    <p>Les 9 matches de classement (places 3 à 20) se jouent en parallèle sur les terrains disponibles. La Finale (places 1-2) se joue ensuite, seule, sur le terrain A.</p>
-    <p>Durée des matches : 1 période unique de 13 minutes.</p>
-    <p>En cas d'égalité à l'issue du temps réglementaire : la victoire est déterminée directement par une séance de tirs au but selon la procédure de l'Article 8.</p>
+    <h4>Article 7 bis : Égalité en Phase 2</h4>
+    <p>La Phase 2 étant à élimination directe, chaque match doit obligatoirement désigner un vainqueur. En cas d'égalité à l'issue du temps réglementaire, la victoire est déterminée directement par une séance de tirs au but, selon la procédure de l'Article 8.</p>
   </div>
 
   <div class="rules-section">
