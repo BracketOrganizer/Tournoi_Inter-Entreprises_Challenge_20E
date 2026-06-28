@@ -659,7 +659,8 @@ window.buildGroupSchedule = function(){
   ST.results = Object.fromEntries(Object.entries(ST.results).filter(([k])=>!k.startsWith('group-'))); // reset résultats des tableaux seulement
   ST.phase='groups';
   saveTournament({ groupSchedule: finalSchedule, groupTabSlot: ST.groupTabSlot, groupTabSlot2: ST.groupTabSlot2, groupBreaks: insertedBreaks, results: ST.results, phase:'groups' });
-  renderGroupPlanningPreview();
+  ST.activeView='groups'; ST.activeGroupRound=0;
+  renderTournamentPage();
 };
 
 
