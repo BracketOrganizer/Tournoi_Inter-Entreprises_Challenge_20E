@@ -12,9 +12,9 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="theme-color" content="#c1440e">
+<meta name="theme-color" content="#0f4a1f">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚽</text></svg>">
-<title>⚽ Vétérans UST — 20 équipes</title>
+<title>⚽ Foot Entreprises Challenge — 20 équipes</title>
 <link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;600;700;900&family=Oswald:wght@400;500;600;700&display=swap" rel="stylesheet">
 
 <!-- ══════════════════════════════════════════════════════════
@@ -30,12 +30,13 @@ import { getFirestore, doc, getDoc, getDocs, setDoc, deleteDoc, onSnapshot, coll
                                     from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCDKgq7NWknOORUwLilkdHnCG6cet6VMZ4",
-  authDomain: "tournoi-veterans.firebaseapp.com",
-  projectId: "tournoi-veterans",
-  storageBucket: "tournoi-veterans.firebasestorage.app",
-  messagingSenderId: "474870610264",
-  appId: "1:474870610264:web:b9e57be2f9e7f098c28d2d"
+  apiKey: "AIzaSyCjyPfCjKvSVFUp8dyF0bjbXwuDIukGu2c",
+  authDomain: "tournoi-foot-inter-entreprises.firebaseapp.com",
+  projectId: "tournoi-foot-inter-entreprises",
+  storageBucket: "tournoi-foot-inter-entreprises.firebasestorage.app",
+  messagingSenderId: "995068678625",
+  appId: "1:995068678625:web:cbe198e586f4e928f802a0",
+  measurementId: "G-D6ZFZR3XJN"
 };
 // ⚠️ Remplacez les valeurs ci-dessus par celles de VOTRE projet Firebase
 // (créez un nouveau projet Firebase dédié à ce tournoi de foot, distinct du pickleball)
@@ -46,7 +47,7 @@ const db        = getFirestore(app);
 const gProvider = new GoogleAuthProvider();
 
 // ══════════════════════════════════════════════════════════
-// ÉTAT GLOBAL — Vétérans UST (20 équipes, 4 poules de 5, 2 phases)
+// ÉTAT GLOBAL — Foot Entreprises (20 équipes, 4 poules de 5, 2 phases)
 // Phase 1 : 4 poules A,B,C,D (5 équipes, round-robin) → classement 1er à 5e par poule
 // Phase 2 : 5 tableaux à élimination de 4 équipes (T1=1ers de poule, T2=2es, T3=3es,
 //           T4=4es, T5=5es). Dans chaque tableau : demi-finales (A vs B, C vs D),
@@ -63,11 +64,14 @@ let MANAGER_VIEW_TEAM_ID = null; // équipe actuellement affichée dans "Mon éq
 let MANAGER_PENDING_REQUEST = null; // demande de 2e équipe en attente de validation admin, si déposée
 let unsubTournament = null;
 let unsubRoster = null;
-let tvCycleIv = null;   // intervalle d'alternance Résultats/Classement en mode Écran
+let tvCycleIv = null;   // minuteur d'avancement entre écrans (mode Écran)
 let tvClockIv = null;   // intervalle de mise à jour de l'horloge en mode Écran
 let tvScrollIv = null;  // (obsolète, conservé pour compat clearInterval) intervalle du défilement automatique en mode Écran
 let tvScrollRAF = null; // boucle requestAnimationFrame du défilement automatique (plus fiable que setInterval sur iOS)
 let tvScreenIndex = 0;  // index de l'écran actuellement affiché parmi les écrans disponibles (mode Écran)
+let tvLastPhase = null; // dernière phase connue, pour repartir au 1er écran si poules→phase 2
+let tvLastScreensSig = null; // signature de la dernière liste d'écrans actifs, pour détecter un changement d'étape et repartir au début
+let tvLastRenderedKey = null; // clé du dernier écran réellement affiché, pour distinguer un changement d'écran d'une simple actualisation de données
 
 const ST = {
   page:1, prevPage:1, rulesOpen:false,
@@ -242,9 +246,6 @@ async function getUserProfile(uid){
       if(d.role==='manager' && d.tournament!=='foot20'){
         return { role:'spectator', teamId:null };
       }
-      // Même logique pour les inscriptions en attente : un 'registrant' créé
-      // depuis une AUTRE appli (même collection 'users' partagée) ne doit pas
-      // se voir bloqué sur un écran "inscription en attente" ici.
       if(d.role==='registrant' && d.tournament!=='foot20'){
         return { role:'spectator', teamId:null };
       }
@@ -425,6 +426,7 @@ function refreshCurrentPage(){
   if(ST.page===5) renderFinalPage();
   if(ST.page==='T') renderTeamsSpecPage();
   if(ST.page==='M') renderManagerPage();
+  if(ST.page==='TV') renderTVContent();
   updateRegOpenBtn();
   const regPanel = document.getElementById('registrationsPanel');
   if(regPanel && regPanel.style.display!=='none'){
@@ -476,9 +478,7 @@ async function getRosterOnce(teamId){
 
 function emptyPlayer(){ return { nom:'', prenom:'', licence:'' }; }
 
-// Vrai si teamId fait partie des équipes gérées par le manager connecté
-// (son équipe principale, ou une équipe supplémentaire du même club si
-// l'admin a autorisé ce club à inscrire plusieurs équipes).
+// Vrai si teamId fait partie des équipes gérées par le manager connecté.
 function isMyTeam(teamId){
   return teamId===MANAGER_TEAM_ID || MANAGER_EXTRA_TEAM_IDS.includes(teamId);
 }
@@ -1043,217 +1043,10 @@ function showApp(){
   applyRoleUI();
   if(USER_ROLE === 'manager') goTo('M');
 }
-function roleBadge(role){
-  const map={admin:'👑 Admin',scorer:'✏️ Scorer (saisie scores)',manager:'🛡️ Responsable équipe',spectator:'👁 Spectateur'};
-  return map[role]||role;
-}
-
-const PAGE_NAMES = { 1:'Config', 2:'Équipes & Poules', 3:'Planning', 4:'Tournoi', 5:'Classement final' };
-
-function applyRoleUI(){
-  const name = CURRENT_USER
-    ? (CURRENT_USER.displayName||CURRENT_USER.email||'?')
-    : '📺 Mode Live';
-  const hdrName=document.getElementById('hdrUserName');
-  if(hdrName) hdrName.textContent = name + ' · ' + roleBadge(USER_ROLE);
-  const lBtn = document.getElementById('logoutBtn');
-  if(lBtn) lBtn.textContent = CURRENT_USER ? 'Déconnexion' : 'Quitter';
-  const isSpec = USER_ROLE === 'spectator';
-  const specNav = document.getElementById('specNav');
-  if(specNav) specNav.classList.toggle('visible', isSpec);
-  const stepNav = document.getElementById('stepNav');
-  if(stepNav) stepNav.style.display = (isSpec || isManager()) ? 'none' : '';
-  document.querySelectorAll('[data-role="admin"]').forEach(el=>{ el.style.display = isAdmin() ? '' : 'none'; });
-  document.querySelectorAll('[data-role="scorer"]').forEach(el=>{ el.style.display = isScorer() ? '' : 'none'; });
-  document.querySelectorAll('[data-role="manager"]').forEach(el=>{ el.style.display = isManager() ? '' : 'none'; });
-  updateStepVisibility();
-  updateFwdBtn();
-  updateRefereesBtnVisibility();
-  updateTeamRefBtnVisibility();
-  updateRegOpenBtn();
-  if(isAdmin()){ try{ loadRegistrations(); }catch(e){} }
-  updateBackFwdLabels();
-  syncDrawerButtons();
-}
-function updateStepVisibility(){
-  [1,2,3].forEach(n=>{
-    const el=document.querySelector(`.step[data-s="${n}"]`);
-    if(el) el.style.display = isAdmin() ? '' : 'none';
-  });
-}
-function updateBackFwdLabels(){
-  const backBtn=document.getElementById('backBtn'), drawerBack=document.getElementById('drawerBackBtn');
-  const fwdBtn=document.getElementById('fwdBtn'), drawerFwd=document.getElementById('drawerFwdBtn');
-  if(typeof ST.page==='number' && ST.page>1){
-    const prevName=PAGE_NAMES[ST.page-1]||'';
-    if(backBtn) backBtn.textContent=`← ${prevName}`;
-    if(drawerBack) drawerBack.textContent=`← Retour : ${prevName}`;
-  }
-  if(typeof ST.page==='number' && ST.page<5){
-    const nextName=PAGE_NAMES[ST.page+1]||'';
-    if(fwdBtn) fwdBtn.textContent=`${nextName} →`;
-    if(drawerFwd) drawerFwd.textContent=`Suivant : ${nextName} →`;
-  }
-}
-function allBracketMatchesPlayed(){
-  if(!ST.groupSchedule.length) return false;
-  return ST.groupSchedule.every(m=>bracketWinner(m)!=null);
-}
-function canGoFwd(){
-  if(ST.page===1) return ST.teams.length>=8;
-  if(ST.page===2) return ST.pools.A.length>0;
-  if(ST.page===3) return ST.poolSchedule.length>0;
-  if(ST.page===4) return allBracketMatchesPlayed();
-  return false;
-}
-function updateFwdBtn(){
-  const show = isAdmin() && canGoFwd() && typeof ST.page==='number' && ST.page<5 && !ST.rulesOpen;
-  const btn = document.getElementById('fwdBtn');
-  if(btn) btn.style.display = show ? '' : 'none';
-  updateBackFwdLabels();
-  syncDrawerButtons();
-}
-window.goBack = function(){ if(typeof ST.page==='number' && ST.page>1 && isAdmin()) goTo(ST.page-1); };
-window.goFwd = function(){
-  if(!canGoFwd()) return;
-  if(ST.page===1) goTo(2);
-  else if(ST.page===2) goTo(3);
-  else if(ST.page===3) goTo(4);
-  else if(ST.page===4) goTo(5);
-};
-
-window.goTo = function(n){
-  if(n!=='R' && isLiveBlocked()){
-    const overlay = document.getElementById('liveClosedOverlay');
-    if(overlay) overlay.style.display='flex';
-    return;
-  }
-  ST.prevPage=ST.page; ST.page=n;
-  stopTVCycle(); // coupe l'horloge/alternance du mode Écran si on le quitte
-  document.body.classList.toggle('tv-mode', n==='TV'); // masque l'entête normale en mode Écran
-  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-  if(n==='T'){
-    document.getElementById('pageT').classList.add('active');
-    renderTeamsSpecPage();
-    document.querySelectorAll('.spec-nav-btn').forEach(btn=>{
-      btn.classList.toggle('spec-nav-active', btn.textContent.includes('ÉQUIPES'));
-    });
-    ST.page='T';
-    return;
-  }
-  if(n==='M'){
-    document.getElementById('pageM').classList.add('active');
-    renderManagerPage();
-    ST.page='M';
-    return;
-  }
-  if(n==='TV'){
-    document.getElementById('pageTV').classList.add('active');
-    renderTVPage();
-    startTVCycle();
-    document.querySelectorAll('.spec-nav-btn').forEach(btn=>{
-      btn.classList.toggle('spec-nav-active', btn.dataset.target==='TV');
-    });
-    ST.page='TV';
-    return;
-  }
-  document.getElementById('page'+n).classList.add('active');
-  document.getElementById('backBtn').style.display=(n>1&&isAdmin())?'':'none';
-  updateFwdBtn();
-  updateSteps(n);
-  document.querySelectorAll('.spec-nav-btn').forEach(btn=>{
-    btn.classList.toggle('spec-nav-active', btn.dataset.target==(''+n));
-  });
-  window.scrollTo(0,0);
-  if(n===1) renderCfgForm();
-  if(n===2) renderTeamsPage();
-  if(n===3) renderPlanningPreview();
-  if(n===4) renderTournamentPage();
-  if(n===5) renderFinalPage();
-};
-window.spectatorGoLive = function(n){
-  if(n!=='R' && isLiveBlocked()){
-    const overlay = document.getElementById('liveClosedOverlay');
-    if(overlay) overlay.style.display='flex';
-    return;
-  }
-  if(n==='T') goTo('T'); else goTo(n);
-};
-function updateSteps(n){
-  [1,2,3,4,5].forEach(i=>{
-    const el=document.getElementById('sl'+i);
-    if(el) el.classList.toggle('done',i<n);
-  });
-}
-
-window.toggleRules = function(){
-  ST.rulesOpen=!ST.rulesOpen;
-  if(!ST.rulesOpen && isLiveBlocked()){
-    document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-    const overlay = document.getElementById('liveClosedOverlay');
-    if(overlay) overlay.style.display='flex';
-    document.getElementById('ruleBtn').textContent='📋 Règlement';
-    return;
-  }
-  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-  const backPage = ST.rulesOpen ? 'pageR' : 'page'+(isAdmin()?ST.page:4);
-  document.getElementById(backPage).classList.add('active');
-  document.getElementById('ruleBtn').textContent=ST.rulesOpen?'× Fermer':'📋 Règlement';
-  document.getElementById('backBtn').style.display=(ST.rulesOpen||ST.page>1)&&isAdmin()?'':'none';
-  updateFwdBtn();
-  if(ST.rulesOpen) applyRoleUI();
-};
-
-window.toggleAdminPanel = function(){
-  const p=document.getElementById('adminPanel');
-  if(p) p.classList.toggle('open');
-};
-window.toggleLiveOpen = async function(){
-  if(!isAdmin()) return;
-  ST.liveOpen = !ST.liveOpen;
-  await saveTournament({ liveOpen: ST.liveOpen });
-  updateLiveToggleBtn();
-};
-function updateLiveToggleBtn(){
-  const btn=document.getElementById('liveToggleBtn');
-  if(!btn) return;
-  btn.textContent = ST.liveOpen ? '🟢 Live ouvert (spectateurs)' : '🔴 Live fermé (spectateurs)';
-  btn.style.background = ST.liveOpen ? 'var(--grn-bg)' : 'var(--red-bg)';
-  btn.style.color = ST.liveOpen ? 'var(--grn)' : 'var(--red)';
-  btn.style.borderColor = ST.liveOpen ? 'var(--grn)' : 'var(--red)';
-}
 
 // ══════════════════════════════════════════════════════════
 // INSCRIPTION EN LIGNE DES ÉQUIPES
 // ══════════════════════════════════════════════════════════
-// Une équipe s'inscrit elle-même (nom équipe, contact, email, tél + mot de
-// passe) depuis l'écran de connexion. Cela crée un compte Firebase Auth +
-// une fiche 'users/{uid}' avec role:'registrant' — état intermédiaire sans
-// accès à l'appli tant que l'admin n'a pas validé (bascule alors en
-// role:'manager' + création de l'équipe) ou refusé.
-
-window.toggleRegistrationsOpen = async function(){
-  if(!isAdmin()) return;
-  const newVal = !ST.registrationsOpen;
-  ST.registrationsOpen = newVal;
-  updateRegOpenBtn();
-  await saveTournament({ registrationsOpen: newVal });
-};
-function updateRegOpenBtn(){
-  const btn=document.getElementById('regToggleBtn');
-  if(!btn) return;
-  const slotsLeft = Math.max(0, (ST.cfg.n||20) - (ST.teams||[]).length);
-  btn.textContent = ST.registrationsOpen
-    ? `🟢 Inscriptions ouvertes (${slotsLeft} place${slotsLeft>1?'s':''} restante${slotsLeft>1?'s':''})`
-    : '🔴 Inscriptions fermées';
-  btn.style.background = ST.registrationsOpen ? 'var(--grn-bg)' : 'var(--red-bg)';
-  btn.style.color = ST.registrationsOpen ? 'var(--grn)' : 'var(--red)';
-  btn.style.borderColor = ST.registrationsOpen ? 'var(--grn)' : 'var(--red)';
-}
-
-// Affiche/masque le bouton "S'inscrire" sur l'écran de connexion selon
-// l'état public (lu directement dans le doc 'current', publiquement lisible
-// même sans connexion sur cette appli).
 let PUBLIC_REG_OPEN = false;
 let PUBLIC_REG_SLOTS = 0;
 function handleRegStatusChange(open, slots){
@@ -1367,6 +1160,205 @@ window.signOutRegistrant = async function(){
   if(el) el.style.display='none';
   showLogin();
 };
+
+function roleBadge(role){
+  const map={admin:'👑 Admin',scorer:'✏️ Scorer (saisie scores)',manager:'🛡️ Responsable équipe',spectator:'👁 Spectateur'};
+  return map[role]||role;
+}
+
+const PAGE_NAMES = { 1:'Config', 2:'Équipes & Poules', 3:'Planning', 4:'Tournoi', 5:'Classement final' };
+
+function applyRoleUI(){
+  const name = CURRENT_USER
+    ? (CURRENT_USER.displayName||CURRENT_USER.email||'?')
+    : '📺 Mode Live';
+  const hdrName=document.getElementById('hdrUserName');
+  if(hdrName) hdrName.textContent = name + ' · ' + roleBadge(USER_ROLE);
+  const lBtn = document.getElementById('logoutBtn');
+  if(lBtn) lBtn.textContent = CURRENT_USER ? 'Déconnexion' : 'Quitter';
+  const isSpec = USER_ROLE === 'spectator';
+  const specNav = document.getElementById('specNav');
+  if(specNav) specNav.classList.toggle('visible', isSpec);
+  const stepNav = document.getElementById('stepNav');
+  if(stepNav) stepNav.style.display = (isSpec || isManager()) ? 'none' : '';
+  document.querySelectorAll('[data-role="admin"]').forEach(el=>{ el.style.display = isAdmin() ? '' : 'none'; });
+  document.querySelectorAll('[data-role="scorer"]').forEach(el=>{ el.style.display = isScorer() ? '' : 'none'; });
+  document.querySelectorAll('[data-role="manager"]').forEach(el=>{ el.style.display = isManager() ? '' : 'none'; });
+  updateStepVisibility();
+  updateFwdBtn();
+  updateRefereesBtnVisibility();
+  updateTeamRefBtnVisibility();
+  updateRegOpenBtn();
+  if(isAdmin()){ try{ loadRegistrations(); }catch(e){} }
+  updateBackFwdLabels();
+  syncDrawerButtons();
+}
+function updateStepVisibility(){
+  [1,2,3].forEach(n=>{
+    const el=document.querySelector(`.step[data-s="${n}"]`);
+    if(el) el.style.display = isAdmin() ? '' : 'none';
+  });
+}
+function updateBackFwdLabels(){
+  const backBtn=document.getElementById('backBtn'), drawerBack=document.getElementById('drawerBackBtn');
+  const fwdBtn=document.getElementById('fwdBtn'), drawerFwd=document.getElementById('drawerFwdBtn');
+  if(typeof ST.page==='number' && ST.page>1){
+    const prevName=PAGE_NAMES[ST.page-1]||'';
+    if(backBtn) backBtn.textContent=`← ${prevName}`;
+    if(drawerBack) drawerBack.textContent=`← Retour : ${prevName}`;
+  }
+  if(typeof ST.page==='number' && ST.page<5){
+    const nextName=PAGE_NAMES[ST.page+1]||'';
+    if(fwdBtn) fwdBtn.textContent=`${nextName} →`;
+    if(drawerFwd) drawerFwd.textContent=`Suivant : ${nextName} →`;
+  }
+}
+function allBracketMatchesPlayed(){
+  if(!ST.groupSchedule.length) return false;
+  return ST.groupSchedule.every(m=>bracketWinner(m)!=null);
+}
+function canGoFwd(){
+  if(ST.page===1) return ST.teams.length>=8;
+  if(ST.page===2) return ST.pools.A.length>0;
+  if(ST.page===3) return ST.poolSchedule.length>0;
+  if(ST.page===4) return allBracketMatchesPlayed();
+  return false;
+}
+function updateFwdBtn(){
+  const show = isAdmin() && canGoFwd() && typeof ST.page==='number' && ST.page<5 && !ST.rulesOpen;
+  const btn = document.getElementById('fwdBtn');
+  if(btn) btn.style.display = show ? '' : 'none';
+  updateBackFwdLabels();
+  syncDrawerButtons();
+}
+window.goBack = function(){ if(typeof ST.page==='number' && ST.page>1 && isAdmin()) goTo(ST.page-1); };
+window.goFwd = function(){
+  if(!canGoFwd()) return;
+  if(ST.page===1) goTo(2);
+  else if(ST.page===2) goTo(3);
+  else if(ST.page===3) goTo(4);
+  else if(ST.page===4) goTo(5);
+};
+
+window.goTo = function(n){
+  if(n!=='R' && isLiveBlocked()){
+    const overlay = document.getElementById('liveClosedOverlay');
+    if(overlay) overlay.style.display='flex';
+    return;
+  }
+  ST.prevPage=ST.page; ST.page=n;
+  stopTVCycle(); // coupe l'horloge/avancement du mode Écran si on le quitte
+  document.body.classList.toggle('tv-mode', n==='TV'); // masque l'entête normale en mode Écran
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  if(n==='T'){
+    document.getElementById('pageT').classList.add('active');
+    renderTeamsSpecPage();
+    document.querySelectorAll('.spec-nav-btn').forEach(btn=>{
+      btn.classList.toggle('spec-nav-active', btn.textContent.includes('ÉQUIPES'));
+    });
+    ST.page='T';
+    return;
+  }
+  if(n==='M'){
+    document.getElementById('pageM').classList.add('active');
+    renderManagerPage();
+    ST.page='M';
+    return;
+  }
+  if(n==='TV'){
+    document.getElementById('pageTV').classList.add('active');
+    renderTVPage();
+    startTVCycle();
+    document.querySelectorAll('.spec-nav-btn').forEach(btn=>{
+      btn.classList.toggle('spec-nav-active', btn.dataset.target==='TV');
+    });
+    ST.page='TV';
+    return;
+  }
+  document.getElementById('page'+n).classList.add('active');
+  document.getElementById('backBtn').style.display=(n>1&&isAdmin())?'':'none';
+  updateFwdBtn();
+  updateSteps(n);
+  document.querySelectorAll('.spec-nav-btn').forEach(btn=>{
+    btn.classList.toggle('spec-nav-active', btn.dataset.target==(''+n));
+  });
+  window.scrollTo(0,0);
+  if(n===1) renderCfgForm();
+  if(n===2) renderTeamsPage();
+  if(n===3) renderPlanningPreview();
+  if(n===4) renderTournamentPage();
+  if(n===5) renderFinalPage();
+};
+window.spectatorGoLive = function(n){
+  if(n!=='R' && isLiveBlocked()){
+    const overlay = document.getElementById('liveClosedOverlay');
+    if(overlay) overlay.style.display='flex';
+    return;
+  }
+  if(n==='T') goTo('T'); else goTo(n);
+};
+function updateSteps(n){
+  [1,2,3,4,5].forEach(i=>{
+    const el=document.getElementById('sl'+i);
+    if(el) el.classList.toggle('done',i<n);
+  });
+}
+
+window.toggleRules = function(){
+  ST.rulesOpen=!ST.rulesOpen;
+  if(!ST.rulesOpen && isLiveBlocked()){
+    document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+    const overlay = document.getElementById('liveClosedOverlay');
+    if(overlay) overlay.style.display='flex';
+    document.getElementById('ruleBtn').textContent='📋 Règlement';
+    return;
+  }
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  const backPage = ST.rulesOpen ? 'pageR' : 'page'+(isAdmin()?ST.page:4);
+  document.getElementById(backPage).classList.add('active');
+  document.getElementById('ruleBtn').textContent=ST.rulesOpen?'× Fermer':'📋 Règlement';
+  document.getElementById('backBtn').style.display=(ST.rulesOpen||ST.page>1)&&isAdmin()?'':'none';
+  updateFwdBtn();
+  if(ST.rulesOpen) applyRoleUI();
+};
+
+window.toggleAdminPanel = function(){
+  const p=document.getElementById('adminPanel');
+  if(p) p.classList.toggle('open');
+};
+window.toggleLiveOpen = async function(){
+  if(!isAdmin()) return;
+  ST.liveOpen = !ST.liveOpen;
+  await saveTournament({ liveOpen: ST.liveOpen });
+  updateLiveToggleBtn();
+};
+function updateLiveToggleBtn(){
+  const btn=document.getElementById('liveToggleBtn');
+  if(!btn) return;
+  btn.textContent = ST.liveOpen ? '🟢 Live ouvert (spectateurs)' : '🔴 Live fermé (spectateurs)';
+  btn.style.background = ST.liveOpen ? 'var(--grn-bg)' : 'var(--red-bg)';
+  btn.style.color = ST.liveOpen ? 'var(--grn)' : 'var(--red)';
+  btn.style.borderColor = ST.liveOpen ? 'var(--grn)' : 'var(--red)';
+}
+
+window.toggleRegistrationsOpen = async function(){
+  if(!isAdmin()) return;
+  const newVal = !ST.registrationsOpen;
+  ST.registrationsOpen = newVal;
+  updateRegOpenBtn();
+  await saveTournament({ registrationsOpen: newVal });
+};
+function updateRegOpenBtn(){
+  const btn=document.getElementById('regToggleBtn');
+  if(!btn) return;
+  const slotsLeft = Math.max(0, (ST.cfg.n||20) - (ST.teams||[]).length);
+  btn.textContent = ST.registrationsOpen
+    ? `🟢 Inscriptions ouvertes (${slotsLeft} place${slotsLeft>1?'s':''} restante${slotsLeft>1?'s':''})`
+    : '🔴 Inscriptions fermées';
+  btn.style.background = ST.registrationsOpen ? 'var(--grn-bg)' : 'var(--red-bg)';
+  btn.style.color = ST.registrationsOpen ? 'var(--grn)' : 'var(--red)';
+  btn.style.borderColor = ST.registrationsOpen ? 'var(--grn)' : 'var(--red)';
+}
 
 // ── Panneau admin de gestion des inscriptions en attente ────────────────
 window.toggleRegistrationsPanel = function(){
@@ -1506,7 +1498,6 @@ window.rejectExtraTeamRequest = async function(uid){
     alert('Erreur : '+e.message);
   }
 };
-
 
 window.approveRegistration = async function(uid){
   if(!isAdmin()) return;
@@ -1726,9 +1717,10 @@ function updateRefereesBtnVisibility(){
   }
 }
 
-// Le document Firestore est propre à cette appli ('foottournoi20/current'),
-// mais on valide/nettoie quand même la forme des données par prudence (évite
-// tout plantage si un champ inattendu s'y retrouve un jour).
+// Cette appli partage la collection Firestore 'foottournoi20' avec l'appli
+// "Vétérans 20 équipes" (même doc 'current') : on valide/nettoie donc
+// systématiquement la forme des données avant de les utiliser, pour éviter
+// tout plantage si un champ inattendu s'y retrouve.
 function sanitizeRefereeAssignments(ra){
   const out = { pools:{}, groups:{} };
   if(ra && typeof ra==='object'){
@@ -2826,8 +2818,22 @@ function rankRowColor(rank){
   if(rank<=4) return 'rgba(217,180,43,.10)';
   return 'rgba(217,90,43,.10)';
 }
+// Désactive et étiquette le bouton "Composer les tableaux" tant qu'il reste
+// des matchs de poules sans résultat — évite à l'admin de cliquer pour se
+// heurter au blocage dans buildGroups().
+function updateBuildGroupsBtn(){
+  const btn = document.getElementById('buildGroupsBtn'); if(!btn) return;
+  const missing = ['A','B','C','D'].reduce((sum,p)=>{
+    const matches = ST.poolSchedule.filter(m=>m.pool===p);
+    return sum + matches.filter(m=>{ const r=getPoolResult(m.matchId); return !(r.ga!==''&&r.gb!=='') ; }).length;
+  }, 0);
+  btn.disabled = missing>0;
+  btn.title = missing>0 ? `${missing} match${missing>1?'s':''} de poule restant${missing>1?'s':''} avant de pouvoir composer les tableaux` : 'Toutes les poules sont terminées';
+  btn.textContent = missing>0 ? `🔒 Phase 2 (${missing} match${missing>1?'s':''} restant${missing>1?'s':''})` : '2️⃣ Composer les tableaux (Phase 2)';
+}
 function renderPoolStandingsPanel(){
   const el=document.getElementById('poolStandingsPanel'); if(!el) return;
+  updateBuildGroupsBtn();
   el.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:10px">` +
     ['A','B','C','D'].map(p=>{
       const st=computePoolStandings(p);
@@ -2984,6 +2990,373 @@ function renderGroupStandingsPanel(){
     }).join('') + `</div>`;
 }
 
+
+// ══════════════════════════════════════════════════════════
+// MODE ÉCRAN — diffusion sur un écran externe (TV via un ordinateur)
+// Page plein écran, fond sombre, gros caractères, pensée pour être vue de
+// loin. Se met à jour automatiquement (mêmes données Firestore live que le
+// reste de l'appli — pas de logique réseau séparée). Réglages (quoi
+// afficher, vitesse d'alternance, barre visible ou non) mémorisés dans le
+// navigateur de CET ordinateur (localStorage).
+//
+// Phase 1 (poules) : comme dans les autres tournois — tous les matchs de
+// poules sur un seul écran qui défile, en alternance avec le classement des
+// poules.
+// Phase 2 (5 tableaux à élimination) : contrairement aux tournois à bracket
+// classique (Tour 1 / Tour 2 / Tour Classement), ici les 5 tableaux jouent
+// en parallèle sur les mêmes créneaux, en seulement 2 étapes : Demi-finales,
+// puis Finales + Petites Finales (qui déterminent directement les 20
+// places). On reste donc sur "Demi-finales" jusqu'à ce qu'elles soient
+// toutes jouées, puis on bascule sur "Finales & Petites Finales", qui
+// alterne avec le Classement Final dès cette étape (comme pour les autres
+// tournois, le classement n'a de sens qu'une fois la phase éliminatoire
+// commencée).
+// ══════════════════════════════════════════════════════════
+function getTVSettings(){
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem('tvSettings')||'{}'); } catch(e){}
+  return {
+    mode:              saved.mode              || 'cycle', // 'results' | 'standings' | 'cycle'
+    intervalMatches:   saved.intervalMatches    || 12,       // secondes d'affichage des écrans "matchs"
+    intervalStandings: saved.intervalStandings  || 20,       // secondes d'affichage de l'écran "classement" (plus long, table à lire)
+    hidden:            saved.hidden             || false,    // barre de réglages masquée
+    scroll:            (saved.scroll===undefined) ? true : saved.scroll // défilement auto si le contenu dépasse l'écran
+  };
+}
+function saveTVSettings(patch){
+  const next = { ...getTVSettings(), ...patch };
+  try { localStorage.setItem('tvSettings', JSON.stringify(next)); } catch(e){}
+  return next;
+}
+
+function startTVCycle(){
+  stopTVCycle();
+  tvScreenIndex = 0;
+  tvLastRenderedKey = null; // on force un "vrai changement d'écran" au tout premier rendu de cette session
+  tvClockIv = setInterval(updateTVClock, 1000);
+  updateTVClock();
+  // L'avancement lui-même est (re)planifié par scheduleTVAdvance(), appelée
+  // à la fin de renderTVContent() — ainsi le délai appliqué est toujours
+  // celui de l'écran ACTUELLEMENT affiché (résultats/tours = court,
+  // classement = plus long), et chaque mise à jour live redonne un plein
+  // temps de lecture.
+}
+function stopTVCycle(){
+  if(tvCycleIv){ clearTimeout(tvCycleIv); tvCycleIv=null; }
+  if(tvClockIv){ clearInterval(tvClockIv); tvClockIv=null; }
+  stopTVAutoScroll();
+}
+// Programme la bascule vers l'écran suivant, avec une durée qui dépend du
+// type de l'écran actuellement affiché (kind 'standings' → intervalStandings,
+// sinon → intervalMatches). Ne programme rien s'il n'y a qu'un seul écran
+// disponible (rien à faire défiler).
+function scheduleTVAdvance(){
+  if(tvCycleIv){ clearTimeout(tvCycleIv); tvCycleIv=null; }
+  const screens = getActiveTVScreens();
+  if(screens.length<=1) return;
+  const current = screens[Math.min(tvScreenIndex, screens.length-1)];
+  const cfg = getTVSettings();
+  const sec = (current && current.kind==='standings')
+    ? Math.max(5, +cfg.intervalStandings || 20)
+    : Math.max(5, +cfg.intervalMatches || 12);
+  tvCycleIv = setTimeout(()=>{
+    const screens2 = getActiveTVScreens();
+    if(screens2.length>1) tvScreenIndex = (tvScreenIndex+1) % screens2.length;
+    renderTVContent(); // se charge elle-même de re-planifier via scheduleTVAdvance()
+  }, sec*1000);
+}
+function updateTVClock(){
+  const el=document.getElementById('tvClock'); if(!el) return;
+  el.textContent = new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+
+// ── Défilement automatique du contenu (mode Écran) ────────────────────────
+// Quand il y a trop de matchs/lignes pour tenir sur l'écran, on fait défiler
+// la zone de contenu vers le bas tout seul (pas de souris/clavier sur la TV),
+// avec une petite pause en haut et en bas pour laisser le temps de lire.
+// Cycle : pause sur la ligne "en cours" (2,5s) → défilement lent vers le bas
+// → pause en bas (2,5s) → retour au tout début → on recommence (pour quand
+// même montrer tous les matchs). Ne fait rien si le contenu tient déjà
+// entièrement dans l'écran.
+let tvScrollState = { phase:'pausedTop', since:0 };
+function startTVAutoScroll(){
+  stopTVAutoScroll();
+  const el = document.getElementById('tvContent'); if(!el) return;
+  const maxScrollInit = el.scrollHeight - el.clientHeight;
+
+  // Point de départ : la ligne du/des match(s) "en cours" si elle existe,
+  // sinon le tout début.
+  let startPos = 0;
+  if(maxScrollInit > 6){
+    const liveEl = el.querySelector('.tv-match-live');
+    if(liveEl){
+      const elRect = el.getBoundingClientRect();
+      const liveRect = liveEl.getBoundingClientRect();
+      const relativeTop = (liveRect.top - elRect.top) + el.scrollTop;
+      startPos = Math.max(0, Math.min(relativeTop - 16, maxScrollInit));
+    }
+  }
+  el.scrollTop = startPos;
+  tvScrollState = { phase:'pausedTop', since: Date.now() };
+  if(getTVSettings().scroll === false) return; // défilement désactivé par l'opérateur
+  const SPEED_PX_PER_SEC = 23; // vitesse de défilement — lent, pensé pour être lisible
+  const PAUSE_MS = 2500;
+  let lastTs = null;
+  // Safari iOS arrondit/tronque el.scrollTop à l'entier à CHAQUE écriture : si on
+  // accumule en relisant el.scrollTop (qui vaut donc 0 ou 1 pixel près), les
+  // incréments inférieurs à 1px (0,39px/frame ici) sont perdus à chaque image et
+  // le défilement ne bouge jamais. On garde donc notre propre compteur en
+  // virgule flottante, indépendant de ce que le navigateur affiche/arrondit.
+  let scrollPos = startPos;
+  function tick(ts){
+    if(!el.isConnected){ tvScrollRAF = null; return; }
+    if(lastTs === null) lastTs = ts;
+    const dt = ts - lastTs;
+    lastTs = ts;
+    const maxScroll = el.scrollHeight - el.clientHeight;
+    if(maxScroll > 6){
+      const now = Date.now();
+      if(tvScrollState.phase==='pausedTop'){
+        if(now - tvScrollState.since >= PAUSE_MS) tvScrollState = { phase:'scrollingDown', since: now };
+      } else if(tvScrollState.phase==='pausedBottom'){
+        if(now - tvScrollState.since >= PAUSE_MS){
+          scrollPos = 0;
+          el.scrollTop = 0; // on repart du tout début pour finir par montrer l'ensemble des matchs
+          tvScrollState = { phase:'pausedTop', since: now };
+        }
+      } else {
+        scrollPos += SPEED_PX_PER_SEC * (dt/1000);
+        if(scrollPos >= maxScroll - 1){
+          scrollPos = maxScroll;
+          el.scrollTop = maxScroll;
+          tvScrollState = { phase:'pausedBottom', since: now };
+        } else {
+          el.scrollTop = scrollPos;
+        }
+      }
+    }
+    tvScrollRAF = requestAnimationFrame(tick);
+  }
+  tvScrollRAF = requestAnimationFrame(tick);
+}
+function stopTVAutoScroll(){
+  if(tvScrollIv){ clearInterval(tvScrollIv); tvScrollIv=null; }
+  if(tvScrollRAF){ cancelAnimationFrame(tvScrollRAF); tvScrollRAF=null; }
+}
+
+function renderTVPage(){
+  renderTVSettingsUI();
+  renderTVContent();
+}
+function renderTVSettingsUI(){
+  const cfg = getTVSettings();
+  const bar = document.getElementById('tvControlBar');
+  if(bar) bar.style.display = cfg.hidden ? 'none' : 'flex';
+  const tab = document.getElementById('tvShowTab');
+  if(tab) tab.style.display = cfg.hidden ? 'flex' : 'none';
+  const modeSel = document.getElementById('tvModeSelect');
+  if(modeSel) modeSel.value = cfg.mode;
+  const ivmWrap = document.getElementById('tvIntervalMatchesWrap');
+  if(ivmWrap) ivmWrap.style.display = cfg.mode==='standings' ? 'none' : '';
+  const ivsWrap = document.getElementById('tvIntervalStandingsWrap');
+  if(ivsWrap) ivsWrap.style.display = cfg.mode==='results' ? 'none' : '';
+  const ivmInput = document.getElementById('tvIntervalMatchesInput');
+  if(ivmInput) ivmInput.value = cfg.intervalMatches;
+  const ivsInput = document.getElementById('tvIntervalStandingsInput');
+  if(ivsInput) ivsInput.value = cfg.intervalStandings;
+  const scrollChk = document.getElementById('tvScrollToggle');
+  if(scrollChk) scrollChk.checked = cfg.scroll;
+}
+window.tvSetMode = function(v){ saveTVSettings({ mode:v }); startTVCycle(); renderTVPage(); };
+window.tvSetIntervalMatches = function(v){ saveTVSettings({ intervalMatches: Math.max(5,+v||12) }); scheduleTVAdvance(); };
+window.tvSetIntervalStandings = function(v){ saveTVSettings({ intervalStandings: Math.max(5,+v||20) }); scheduleTVAdvance(); };
+window.tvSetScroll = function(v){ saveTVSettings({ scroll: !!v }); startTVAutoScroll(); };
+window.tvToggleHidden = function(){ saveTVSettings({ hidden: !getTVSettings().hidden }); renderTVSettingsUI(); };
+window.tvToggleFullscreen = function(){
+  if(!document.fullscreenElement) document.documentElement.requestFullscreen().catch(()=>{});
+  else document.exitFullscreen().catch(()=>{});
+};
+window.tvExit = function(){
+  stopTVCycle();
+  if(USER_ROLE==='spectator' || USER_ROLE===null) spectatorGoLive(4);
+  else goTo(4);
+};
+
+function tvMatchRowHTML(m, isLive){
+  const aName = m.aId ? tName(m.aId) : '<em>à déterminer</em>';
+  const bName = m.bId ? tName(m.bId) : '<em>à déterminer</em>';
+  const score = m.done ? `${m.r.ga} – ${m.r.gb}` : (isLive ? 'en cours' : '–');
+  return `<div class="tv-match-row ${isLive?'tv-match-live':''}">
+    <div class="tv-match-meta"><span>${m.label}${m.court?' · T'+m.court:''}</span><span class="tv-match-time">${m.time||''}</span></div>
+    <div class="tv-match-teams">
+      <span class="tv-team">${aName}</span>
+      <span class="tv-score">${score}</span>
+      <span class="tv-team tv-team-r">${bName}</span>
+    </div>
+  </div>`;
+}
+// Grille de cartes de match. isLiveFn(m) détermine si CE match doit être mis
+// en avant comme "en cours" (uniquement pertinent s'il n'est pas encore joué).
+function tvMatchGridHTML(matches, isLiveFn){
+  if(!matches.length) return `<div class="tv-empty">Aucun match à afficher pour le moment.</div>`;
+  const cards = matches.map(m=>tvMatchRowHTML(m, !m.done && isLiveFn && isLiveFn(m))).join('');
+  return `<div class="tv-match-grid">${cards}</div>`;
+}
+
+const TV_PAGE_SIZE = 12; // nombre maximum de matchs affichés sur un même écran avant pagination
+
+function tvStandingsPoolsHTML(){
+  return `<div class="tv-pools-grid">` + ['A','B','C','D'].map(p=>{
+    const st = computePoolStandings(p);
+    const col = POOL_COLORS[p];
+    return `<div class="tv-pool-card" style="border-color:${col.main}">
+      <div class="tv-pool-ttl" style="background:${col.main}">Poule ${p}</div>
+      <table class="tv-stbl">
+        <thead><tr><th>#</th><th>Équipe</th><th>Pts</th><th>J</th><th>+/-</th></tr></thead>
+        <tbody>${st.map((s,i)=>`<tr class="${i<2?'tv-row-top':''}">
+          <td>${i+1}</td><td class="tv-team-name">${tName(s.id)}</td>
+          <td class="tv-pts">${s.pts}</td><td>${s.j}</td><td>${s.diff>0?'+':''}${s.diff}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>`;
+  }).join('') + `</div>`;
+}
+function tvFinalRankingHTML(){
+  const ranking = computeFinalRanking();
+  if(!ranking.length) return `<div class="tv-empty">Le classement s'affichera une fois la phase 2 lancée.</div>`;
+  return `<table class="tv-final-tbl">
+    <thead><tr><th>Place</th><th>Équipe</th></tr></thead>
+    <tbody>${ranking.map(r=>`<tr class="${r.place<=3?'tv-podium-'+r.place:''}">
+      <td class="tv-place">${r.place===1?'🥇':r.place===2?'🥈':r.place===3?'🥉':r.place}</td>
+      <td class="tv-team-name">${tName(r.teamId)}</td>
+    </tr>`).join('')}</tbody>
+  </table>`;
+}
+
+// Libellé d'un match de Phase 2 : nom du tableau + plage de places + nom du
+// tour (ex : "T2 (places 5-8) · Demi 1").
+function tvGroupMatchLabel(m){
+  const base = BRACKET_BASE_PLACE[m.bracket];
+  const roundName = m.round==='semi1' ? 'Demi 1' : m.round==='semi2' ? 'Demi 2' : m.round==='final' ? 'Finale' : 'Petite finale';
+  return `${m.bracket} (places ${base}-${base+3}) · ${roundName}`;
+}
+
+// Construit la liste ordonnée des "écrans" disponibles.
+// Phase 1 : tous les matchs de poules (1 écran qui défile) + classement des poules.
+// Phase 2 : Demi-finales (tant qu'elles ne sont pas toutes jouées) — SEUL
+// écran à ce stade (comme pour les autres tournois, pas de classement
+// pertinent avant que la phase éliminatoire ait commencé à produire des
+// résultats). Une fois les demi-finales terminées : Finales & Petites
+// Finales, ENSEMBLE avec le Classement Final (qui se complète au fur et à
+// mesure), jusqu'à la fin du tournoi.
+function getTVScreens(){
+  const screens = [];
+  if(ST.phase==='pools'){
+    const poolMatches = (ST.poolSchedule||[]).map(m=>{
+      const r = getPoolResult(m.matchId);
+      return { slot:m.slot, court:m.court, time:m.time, label:'Poule '+m.pool, aId:m.a, bId:m.b, r, done:(r.ga!==''&&r.gb!=='') };
+    }).sort((a,b)=>a.slot-b.slot||a.court-b.court);
+    const isLiveNow = (ST.activeView==='pools' && typeof ST.activePoolRound==='number')
+      ? (m=>m.slot===ST.activePoolRound) : (()=>false);
+    screens.push({
+      key:'pool-results', kind:'matches', title:'⚽ Matchs de Poules',
+      render: ()=>tvMatchGridHTML(poolMatches, isLiveNow)
+    });
+    screens.push({ key:'pool-std', kind:'standings', title:'📊 Classement des Poules', render: tvStandingsPoolsHTML });
+    return screens;
+  }
+
+  // Phase 2 (groups) ou terminé : plus aucun mélange avec les poules.
+  const buildFlat = (rounds) => (ST.groupSchedule||[])
+    .filter(m=>rounds.includes(m.round))
+    .sort((a,b)=>a.slot-b.slot||a.court-b.court)
+    .map(m=>{
+      const t = getBracketMatchTeams(m);
+      const r = getGroupResult(m.matchId);
+      return { slot:m.slot, court:m.court, time:m.time, label:tvGroupMatchLabel(m), aId:t.a, bId:t.b, r, done:(r.ga!==''&&r.gb!=='') };
+    });
+  const isLiveNow = m=>m.slot===ST.activeGroupRound;
+
+  const semis = (ST.groupSchedule||[]).filter(m=>m.round==='semi1'||m.round==='semi2');
+  const semisDone = semis.length>0 && semis.every(m=>{ const r=getGroupResult(m.matchId); return r.ga!==''&&r.gb!==''; });
+
+  if(!semisDone){
+    const flat = buildFlat(['semi1','semi2']);
+    const pageCount = Math.max(1, Math.ceil(flat.length/TV_PAGE_SIZE));
+    for(let i=0;i<pageCount;i++){
+      const page = flat.slice(i*TV_PAGE_SIZE,(i+1)*TV_PAGE_SIZE);
+      screens.push({
+        key:'demi-'+i, kind:'matches',
+        title: pageCount>1 ? `🏆 Demi-finales (${i+1}/${pageCount})` : '🏆 Demi-finales',
+        render: ()=>tvMatchGridHTML(page, isLiveNow)
+      });
+    }
+  } else {
+    const flat = buildFlat(['final','petite']);
+    const pageCount = Math.max(1, Math.ceil(flat.length/TV_PAGE_SIZE));
+    for(let i=0;i<pageCount;i++){
+      const page = flat.slice(i*TV_PAGE_SIZE,(i+1)*TV_PAGE_SIZE);
+      screens.push({
+        key:'finale-'+i, kind:'matches',
+        title: pageCount>1 ? `🏆 Finales & Petites Finales (${i+1}/${pageCount})` : '🏆 Finales & Petites Finales',
+        render: ()=>tvMatchGridHTML(page, isLiveNow)
+      });
+    }
+    screens.push({ key:'final-rank', kind:'standings', title:'🥇 Classement Final', render: tvFinalRankingHTML });
+  }
+  return screens;
+}
+// Applique le filtre du réglage "Affichage" (Résultats / Classement / Alterné)
+// à la liste d'écrans de la phase en cours. La progression entre étapes
+// (Demi-finales → Finales, poules → phase 2) est déjà gérée dans
+// getTVScreens() lui-même.
+function getActiveTVScreens(){
+  const screens = getTVScreens();
+  const cfg = getTVSettings();
+  if(cfg.mode==='results')   return screens.filter(s=>s.kind==='matches');
+  if(cfg.mode==='standings') return screens.filter(s=>s.kind==='standings');
+  return screens; // 'cycle' = tout, dans l'ordre construit ci-dessus
+}
+
+function renderTVContent(){
+  const el=document.getElementById('tvContent'); if(!el) return;
+  const phaseEl=document.getElementById('tvPhaseBadge');
+  if(phaseEl) phaseEl.textContent = ST.phase==='pools' ? '🏊 Phase 1 (Poules)' : ST.phase==='groups' ? '🏆 Phase 2 (Tableaux)' : '🏁 Tournoi terminé';
+
+  // Changement de phase (ex : poules → phase 2) : on repart du 1er écran
+  // plutôt que de garder un index qui ne correspondrait plus à rien.
+  if(ST.phase !== tvLastPhase){ tvLastPhase = ST.phase; tvScreenIndex = 0; }
+
+  const screens = getActiveTVScreens();
+  const sig = screens.map(s=>s.key).join('|');
+  if(sig !== tvLastScreensSig){ tvLastScreensSig = sig; tvScreenIndex = 0; } // ex: demi-finales terminées → on bascule sur les finales dès le 1er rendu
+  if(tvScreenIndex >= screens.length) tvScreenIndex = 0;
+  const screen = screens[tvScreenIndex];
+  const subEl=document.getElementById('tvSubTitle');
+
+  // Un vrai changement d'écran justifie de repartir du début (position de
+  // défilement + minuteur de bascule). Une simple actualisation de données
+  // en direct sur LE MÊME écran (ex : un score rentre pendant qu'on regarde
+  // le classement) ne doit PAS tout réinitialiser — sinon l'écran
+  // Classement, plus long à lire, ne finit jamais de défiler si des scores
+  // rentrent régulièrement pendant ce temps-là.
+  const isScreenChange = !screen || screen.key !== tvLastRenderedKey;
+  tvLastRenderedKey = screen ? screen.key : null;
+
+  if(!screen){
+    if(subEl) subEl.textContent = '';
+    el.innerHTML = `<div class="tv-empty">Rien à afficher pour le moment.</div>`;
+  } else {
+    if(subEl) subEl.textContent = screen.title;
+    el.innerHTML = screen.render();
+  }
+  if(!isScreenChange) return; // données actualisées en place, on laisse le défilement/minuteur en cours suivre leur cours
+  // requestAnimationFrame : on attend que la mise en page du nouveau contenu
+  // soit posée avant de calculer la position de la ligne "en cours" (sinon,
+  // sur un changement d'écran, la mesure peut être prise un cran trop tôt).
+  requestAnimationFrame(startTVAutoScroll);
+  scheduleTVAdvance(); // (re)programme la prochaine bascule avec la durée propre à cet écran
+}
 // ── Carte de match (saisie score) ────────────────────────
 const _scoreDebounce = {}; // { 'type_matchId': timeoutId }
 function matchCardHTML(type, matchId, aId, bId, r, subtitle, court, time, needsShootout){
@@ -3113,330 +3486,6 @@ function renderFinalPage(){
     ? `<div class="info info-y">⏳ ${completedCount}/${totalCount} places déterminées — tournoi en cours.</div>`
     : `<div class="info info-g">🏆 Tournoi terminé ! Classement complet.</div>`;
 }
-// ══════════════════════════════════════════════════════════
-// MODE ÉCRAN — diffusion sur un écran externe (TV via un ordinateur)
-// Page plein écran, fond sombre, gros caractères, pensée pour être vue de
-// loin. Se met à jour automatiquement (mêmes données Firestore live que le
-// reste de l'appli — pas de logique réseau séparée). Réglages (quoi
-// afficher, vitesse d'alternance, barre visible ou non) mémorisés dans le
-// navigateur de CET ordinateur (localStorage), pour rester d'une fois sur
-// l'autre sans avoir à les ressaisir à chaque lancement.
-// ══════════════════════════════════════════════════════════
-function getTVSettings(){
-  let saved = {};
-  try { saved = JSON.parse(localStorage.getItem('tvSettings')||'{}'); } catch(e){}
-  return {
-    mode:              saved.mode              || 'cycle', // 'results' | 'standings' | 'cycle' (les 2 en alterné)
-    intervalMatches:   saved.intervalMatches    || 12,       // secondes d'affichage des écrans "matchs"
-    intervalStandings: saved.intervalStandings  || 20,       // secondes d'affichage de l'écran "classement" (plus long, table à lire)
-    hidden:            saved.hidden             || false,    // barre de réglages masquée
-    scroll:            (saved.scroll===undefined) ? true : saved.scroll // défilement auto si le contenu dépasse l'écran
-  };
-}
-function saveTVSettings(patch){
-  const next = { ...getTVSettings(), ...patch };
-  try { localStorage.setItem('tvSettings', JSON.stringify(next)); } catch(e){}
-  return next;
-}
-
-function startTVCycle(){
-  stopTVCycle();
-  tvScreenIndex = 0;
-  tvLastRenderedKey = null; // on force un "vrai changement d'écran" au tout premier rendu de cette session
-  tvClockIv = setInterval(updateTVClock, 1000);
-  updateTVClock();
-}
-function stopTVCycle(){
-  if(tvCycleIv){ clearTimeout(tvCycleIv); tvCycleIv=null; }
-  if(tvClockIv){ clearInterval(tvClockIv); tvClockIv=null; }
-  stopTVAutoScroll();
-}
-// Programme la bascule vers l'écran suivant, avec une durée qui dépend du
-// type de l'écran actuellement affiché (kind 'standings' → intervalStandings,
-// sinon → intervalMatches). Ne programme rien s'il n'y a qu'un seul écran
-// disponible (rien à faire défiler).
-function scheduleTVAdvance(){
-  if(tvCycleIv){ clearTimeout(tvCycleIv); tvCycleIv=null; }
-  const screens = getActiveTVScreens();
-  if(screens.length<=1) return;
-  const current = screens[Math.min(tvScreenIndex, screens.length-1)];
-  const cfg = getTVSettings();
-  const sec = (current && current.kind==='standings')
-    ? Math.max(5, +cfg.intervalStandings || 20)
-    : Math.max(5, +cfg.intervalMatches || 12);
-  tvCycleIv = setTimeout(()=>{
-    const screens2 = getActiveTVScreens();
-    if(screens2.length>1) tvScreenIndex = (tvScreenIndex+1) % screens2.length;
-    renderTVContent(); // se charge elle-même de re-planifier via scheduleTVAdvance()
-  }, sec*1000);
-}
-function updateTVClock(){
-  const el=document.getElementById('tvClock'); if(!el) return;
-  el.textContent = new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
-}
-
-// ── Défilement automatique du contenu (mode Écran) ────────────────────────
-// Quand il y a trop de matchs/lignes pour tenir sur l'écran, on fait défiler
-// la zone de contenu vers le bas tout seul (pas de souris/clavier sur la TV),
-// avec une petite pause en haut et en bas pour laisser le temps de lire.
-// Cycle : pause sur la ligne "en cours" (2,5s) → défilement lent vers le bas
-// → pause en bas (2,5s) → retour au tout début → on recommence (pour quand
-// même montrer tous les matchs). Ne fait rien si le contenu tient déjà
-// entièrement dans l'écran.
-let tvScrollState = { phase:'pausedTop', since:0 };
-function startTVAutoScroll(){
-  stopTVAutoScroll();
-  const el = document.getElementById('tvContent'); if(!el) return;
-  const maxScrollInit = el.scrollHeight - el.clientHeight;
-
-  // Point de départ : la ligne du/des match(s) "en cours" si elle existe,
-  // sinon le tout début. On utilise getBoundingClientRect (et non offsetTop)
-  // pour rester fiable quelle que soit la chaîne d'ancêtres positionnés.
-  let startPos = 0;
-  if(maxScrollInit > 6){
-    const liveEl = el.querySelector('.tv-match-live');
-    if(liveEl){
-      const elRect = el.getBoundingClientRect();
-      const liveRect = liveEl.getBoundingClientRect();
-      const relativeTop = (liveRect.top - elRect.top) + el.scrollTop;
-      startPos = Math.max(0, Math.min(relativeTop - 16, maxScrollInit));
-    }
-  }
-  el.scrollTop = startPos;
-  tvScrollState = { phase:'pausedTop', since: Date.now() };
-  if(getTVSettings().scroll === false) return; // défilement désactivé par l'opérateur
-  const SPEED_PX_PER_SEC = 23; // vitesse de défilement — lent, pensé pour être lisible
-  const PAUSE_MS = 2500;
-  let lastTs = null;
-  // Safari iOS arrondit/tronque el.scrollTop à l'entier à CHAQUE écriture : si on
-  // accumule en relisant el.scrollTop (qui vaut donc 0 ou 1 pixel près), les
-  // incréments inférieurs à 1px (0,39px/frame ici) sont perdus à chaque image et
-  // le défilement ne bouge jamais. On garde donc notre propre compteur en
-  // virgule flottante, indépendant de ce que le navigateur affiche/arrondit.
-  let scrollPos = startPos;
-  function tick(ts){
-    if(!el.isConnected){ tvScrollRAF = null; return; }
-    if(lastTs === null) lastTs = ts;
-    const dt = ts - lastTs;
-    lastTs = ts;
-    const maxScroll = el.scrollHeight - el.clientHeight;
-    if(maxScroll > 6){
-      const now = Date.now();
-      if(tvScrollState.phase==='pausedTop'){
-        if(now - tvScrollState.since >= PAUSE_MS) tvScrollState = { phase:'scrollingDown', since: now };
-      } else if(tvScrollState.phase==='pausedBottom'){
-        if(now - tvScrollState.since >= PAUSE_MS){
-          scrollPos = 0;
-          el.scrollTop = 0; // on repart du tout début pour finir par montrer l'ensemble des matchs
-          tvScrollState = { phase:'pausedTop', since: now };
-        }
-      } else {
-        scrollPos += SPEED_PX_PER_SEC * (dt/1000);
-        if(scrollPos >= maxScroll - 1){
-          scrollPos = maxScroll;
-          el.scrollTop = maxScroll;
-          tvScrollState = { phase:'pausedBottom', since: now };
-        } else {
-          el.scrollTop = scrollPos;
-        }
-      }
-    }
-    tvScrollRAF = requestAnimationFrame(tick);
-  }
-  tvScrollRAF = requestAnimationFrame(tick);
-}
-function stopTVAutoScroll(){
-  if(tvScrollIv){ clearInterval(tvScrollIv); tvScrollIv=null; }
-  if(tvScrollRAF){ cancelAnimationFrame(tvScrollRAF); tvScrollRAF=null; }
-}
-
-function renderTVPage(){
-  renderTVSettingsUI();
-  renderTVContent();
-}
-function renderTVSettingsUI(){
-  const cfg = getTVSettings();
-  const bar = document.getElementById('tvControlBar');
-  if(bar) bar.style.display = cfg.hidden ? 'none' : 'flex';
-  const tab = document.getElementById('tvShowTab');
-  if(tab) tab.style.display = cfg.hidden ? 'flex' : 'none';
-  const modeSel = document.getElementById('tvModeSelect');
-  if(modeSel) modeSel.value = cfg.mode;
-  const ivmWrap = document.getElementById('tvIntervalMatchesWrap');
-  if(ivmWrap) ivmWrap.style.display = cfg.mode==='standings' ? 'none' : '';
-  const ivsWrap = document.getElementById('tvIntervalStandingsWrap');
-  if(ivsWrap) ivsWrap.style.display = cfg.mode==='results' ? 'none' : '';
-  const ivmInput = document.getElementById('tvIntervalMatchesInput');
-  if(ivmInput) ivmInput.value = cfg.intervalMatches;
-  const ivsInput = document.getElementById('tvIntervalStandingsInput');
-  if(ivsInput) ivsInput.value = cfg.intervalStandings;
-  const scrollChk = document.getElementById('tvScrollToggle');
-  if(scrollChk) scrollChk.checked = cfg.scroll;
-}
-window.tvSetMode = function(v){ saveTVSettings({ mode:v }); startTVCycle(); renderTVPage(); };
-window.tvSetIntervalMatches = function(v){ saveTVSettings({ intervalMatches: Math.max(5,+v||12) }); scheduleTVAdvance(); };
-window.tvSetIntervalStandings = function(v){ saveTVSettings({ intervalStandings: Math.max(5,+v||20) }); scheduleTVAdvance(); };
-window.tvSetScroll = function(v){ saveTVSettings({ scroll: !!v }); startTVAutoScroll(); };
-window.tvToggleHidden = function(){ saveTVSettings({ hidden: !getTVSettings().hidden }); renderTVSettingsUI(); };
-window.tvToggleFullscreen = function(){
-  if(!document.fullscreenElement) document.documentElement.requestFullscreen().catch(()=>{});
-  else document.exitFullscreen().catch(()=>{});
-};
-window.tvExit = function(){
-  stopTVCycle();
-  if(USER_ROLE==='spectator' || USER_ROLE===null) spectatorGoLive(4);
-  else goTo(4);
-};
-
-// Liste à plat de tous les matchs (poules + tableaux) avec leur résultat,
-// pour le "défilé des résultats".
-function tvAllMatchesFlat(){
-  const list = [];
-  (ST.poolSchedule||[]).forEach(m=>{
-    const r = getPoolResult(m.matchId);
-    list.push({ type:'pool', id:m.matchId, slot:m.slot, time:m.time, court:m.court,
-      label:'Poule '+m.pool, aId:m.a, bId:m.b, r, done:(r.ga!==''&&r.gb!=='') });
-  });
-  (ST.groupSchedule||[]).forEach(m=>{
-    const r = getGroupResult(m.matchId);
-    const teams = getBracketMatchTeams(m);
-    list.push({ type:'group', id:m.matchId, slot:m.slot, time:m.time, court:m.court, round:m.round,
-      label: m.bracket+' · '+bracketRoundLabel(m.round), aId:teams.a, bId:teams.b,
-      r, done:(r.ga!==''&&r.gb!=='') });
-  });
-  return list;
-}
-function tvMatchRowHTML(m, isLive){
-  const aName = m.aId ? tName(m.aId) : '<em>à déterminer</em>';
-  const bName = m.bId ? tName(m.bId) : '<em>à déterminer</em>';
-  const score = m.done ? `${m.r.ga} – ${m.r.gb}` : (isLive ? 'en cours' : '–');
-  return `<div class="tv-match-row ${isLive?'tv-match-live':''}">
-    <div class="tv-match-meta"><span>${m.label}${m.court?' · T'+m.court:''}</span><span class="tv-match-time">${m.time||''}</span></div>
-    <div class="tv-match-teams">
-      <span class="tv-team">${aName}</span>
-      <span class="tv-score">${score}</span>
-      <span class="tv-team tv-team-r">${bName}</span>
-    </div>
-  </div>`;
-}
-// Grille de cartes de match. isLiveFn(m) détermine si CE match doit être mis
-// en avant comme "en cours" (uniquement pertinent s'il n'est pas encore joué).
-function tvMatchGridHTML(matches, isLiveFn){
-  if(!matches.length) return `<div class="tv-empty">Aucun match à afficher pour le moment.</div>`;
-  const cards = matches.map(m=>tvMatchRowHTML(m, !m.done && isLiveFn && isLiveFn(m))).join('');
-  return `<div class="tv-match-grid">${cards}</div>`;
-}
-function tvStandingsPoolsHTML(){
-  return `<div class="tv-pools-grid">` + ['A','B','C','D'].map(p=>{
-    const st = computePoolStandings(p);
-    const col = POOL_COLORS[p];
-    return `<div class="tv-pool-card" style="border-color:${col.main}">
-      <div class="tv-pool-ttl" style="background:${col.main}">Poule ${p}</div>
-      <table class="tv-stbl">
-        <thead><tr><th>#</th><th>Équipe</th><th>Pts</th><th>J</th><th>+/-</th></tr></thead>
-        <tbody>${st.map((s,i)=>`<tr class="${i<2?'tv-row-top':''}">
-          <td>${i+1}</td><td class="tv-team-name">${tName(s.id)}</td>
-          <td class="tv-pts">${s.pts}</td><td>${s.j}</td><td>${s.diff>0?'+':''}${s.diff}</td>
-        </tr>`).join('')}</tbody>
-      </table>
-    </div>`;
-  }).join('') + `</div>`;
-}
-function tvFinalRankingHTML(){
-  const ranking = computeFinalRanking();
-  if(!ranking.length) return `<div class="tv-empty">Le classement s'affichera une fois la phase finale lancée.</div>`;
-  return `<table class="tv-final-tbl">
-    <thead><tr><th>Place</th><th>Équipe</th></tr></thead>
-    <tbody>${ranking.map(r=>`<tr class="${r.place<=3?'tv-podium-'+r.place:''}">
-      <td class="tv-place">${r.place===1?'🥇':r.place===2?'🥈':r.place===3?'🥉':r.place}</td>
-      <td class="tv-team-name">${tName(r.teamId)}</td>
-    </tr>`).join('')}</tbody>
-  </table>`;
-}
-// Construit la liste ordonnée des "écrans" disponibles pour la phase en
-// cours. Pendant les poules : uniquement les matchs/classements de poules.
-// En Phase 2 : demi-finales (les 5 tableaux ensemble), puis finales/petites
-// finales (les 5 tableaux ensemble), puis le classement final.
-function getTVScreens(){
-  const screens = [];
-  if(ST.phase==='pools'){
-    const poolMatches = tvAllMatchesFlat().filter(m=>m.type==='pool').sort((a,b)=>a.slot-b.slot||a.court-b.court);
-    const isLiveNow = (ST.activeView==='pools' && typeof ST.activePoolRound==='number')
-      ? (m=>m.slot===ST.activePoolRound) : (()=>false);
-    screens.push({ key:'pool-results', kind:'matches', title:'⚽ Matchs de Poules', render: ()=>tvMatchGridHTML(poolMatches, isLiveNow) });
-    screens.push({ key:'pool-std', kind:'standings', title:'📊 Classement des Poules', render: tvStandingsPoolsHTML });
-  } else {
-    const allFlat = tvAllMatchesFlat().filter(m=>m.type==='group');
-    const semiMatches  = allFlat.filter(m=>m.round==='semi1'||m.round==='semi2').sort((a,b)=>a.slot-b.slot||a.court-b.court);
-    const finalMatches = allFlat.filter(m=>m.round==='final'||m.round==='petite').sort((a,b)=>a.slot-b.slot||a.court-b.court);
-    const isLiveNow = (ST.activeView==='groups' && typeof ST.activeGroupRound==='number')
-      ? (m=>m.slot===ST.activeGroupRound) : (()=>false);
-    if(semiMatches.length)  screens.push({ key:'group-semis',  kind:'matches', title:'⚽ Demi-finales (5 tableaux)', render: ()=>tvMatchGridHTML(semiMatches, isLiveNow) });
-    if(finalMatches.length) screens.push({ key:'group-finals', kind:'matches', title:'⚽ Finales & Petites finales', render: ()=>tvMatchGridHTML(finalMatches, isLiveNow) });
-    screens.push({ key:'final-rank', kind:'standings', title:'🥇 Classement Final', render: tvFinalRankingHTML });
-  }
-  return screens;
-}
-// Les demi-finales des 5 tableaux sont-elles toutes jouées ? Tant que non, on
-// ne montre que l'écran "Demi-finales" (pas de saut vers un tour pas encore
-// joué avec un minuteur qui tournerait dans le vide).
-function tvAreGroupRoundsDone(rounds){
-  const matches = (ST.groupSchedule||[]).filter(m=>rounds.includes(m.round));
-  if(!matches.length) return true;
-  return matches.every(m=>{ const r=getGroupResult(m.matchId); return r.ga!==''&&r.gb!==''; });
-}
-// Applique le filtre du réglage "Affichage" (Résultats / Classement / Alterné)
-// à la liste d'écrans de la phase en cours.
-function getActiveTVScreens(){
-  const screens = getTVScreens();
-  const cfg = getTVSettings();
-  if(cfg.mode==='standings') return screens.filter(s=>s.kind==='standings');
-
-  if(ST.phase!=='pools'){
-    let relevant;
-    if(!tvAreGroupRoundsDone(['semi1','semi2'])) relevant = screens.filter(s=>s.key==='group-semis');
-    else relevant = screens.filter(s=>s.key==='group-finals' || s.kind==='standings');
-    if(!relevant.length) relevant = screens; // sécurité si jamais rien ne correspond
-    return cfg.mode==='results' ? relevant.filter(s=>s.kind==='matches') : relevant;
-  }
-
-  if(cfg.mode==='results') return screens.filter(s=>s.kind==='matches');
-  return screens; // poules, mode 'cycle' : Matchs de Poules ↔ Classement des Poules
-}
-let tvLastScreensSig = null; // signature de la dernière liste d'écrans actifs, pour détecter un changement de tour et repartir au début
-let tvLastRenderedKey = null; // clé du dernier écran réellement affiché, pour distinguer un changement d'écran d'une simple actualisation de données
-let tvLastPhase = null; // dernière phase connue, pour repartir au 1er écran si poules→tableaux
-function renderTVContent(){
-  const el=document.getElementById('tvContent'); if(!el) return;
-  const phaseEl=document.getElementById('tvPhaseBadge');
-  if(phaseEl) phaseEl.textContent = ST.phase==='pools' ? '⚽ Phase de poules' : ST.phase==='groups' ? '🏆 Phase finale (tableaux)' : '🏁 Tournoi terminé';
-
-  // Changement de phase (ex : poules → tableaux) : on repart du 1er écran
-  // plutôt que de garder un index qui ne correspondrait plus à rien.
-  if(ST.phase !== tvLastPhase){ tvLastPhase = ST.phase; tvScreenIndex = 0; }
-
-  const screens = getActiveTVScreens();
-  const sig = screens.map(s=>s.key).join('|');
-  if(sig !== tvLastScreensSig){ tvLastScreensSig = sig; tvScreenIndex = 0; } // ex: demis terminées → on bascule sur finales dès le 1er rendu
-  if(tvScreenIndex >= screens.length) tvScreenIndex = 0;
-  const screen = screens[tvScreenIndex];
-  const subEl=document.getElementById('tvSubTitle');
-
-  const isScreenChange = !screen || screen.key !== tvLastRenderedKey;
-  tvLastRenderedKey = screen ? screen.key : null;
-
-  if(!screen){
-    if(subEl) subEl.textContent = '';
-    el.innerHTML = `<div class="tv-empty">Rien à afficher pour le moment.</div>`;
-  } else {
-    if(subEl) subEl.textContent = screen.title;
-    el.innerHTML = screen.render();
-  }
-  if(!isScreenChange) return; // données actualisées en place, on laisse le défilement/minuteur en cours suivre leur cours
-  requestAnimationFrame(startTVAutoScroll);
-  scheduleTVAdvance(); // (re)programme la prochaine bascule avec la durée propre à cet écran
-}
-
 window.printFinalRanking = function(){
   const ranking = computeFinalRanking();
   if(!ranking.length){ alert('Classement non disponible.'); return; }
@@ -3445,7 +3494,7 @@ window.printFinalRanking = function(){
   win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Classement Final</title>
   <style>*{box-sizing:border-box;margin:0;padding:0} body{font-family:Arial;padding:20px} table{width:100%;border-collapse:collapse} th{background:#0f4a1f;color:#fff;padding:8px} td{border-bottom:1px solid #ddd}
   @media print{@page{margin:10mm} .noprint{display:none!important} th{background:#0f4a1f!important;color:#fff!important} html{-webkit-print-color-adjust:exact}}</style>
-  </head><body><h2>⚽ Classement Final — Vétérans UST</h2>
+  </head><body><h2>⚽ Classement Final — Foot Entreprises Challenge</h2>
   <table><thead><tr><th>Place</th><th>Équipe</th></tr></thead><tbody>${rows}</tbody></table>
   <div class="noprint" style="margin-top:14px"><button onclick="window.print()">🖨 Imprimer</button></div>
   </body></html>`);
@@ -3496,8 +3545,6 @@ window.adminPickRosterTeam = function(teamId){
   else renderManagerPage();
 };
 
-// Le manager d'un club autorisé à plusieurs équipes bascule entre ses
-// équipes via un menu déroulant (au lieu de comptes séparés par équipe).
 window.managerPickRosterTeam = function(teamId){
   if(!isManager() || !isMyTeam(teamId)) return;
   MANAGER_VIEW_TEAM_ID = teamId;
@@ -3697,9 +3744,9 @@ html{ color-scheme:light; }
 html,body{ height:100%; background:var(--s0); color:var(--ink); font-family:'Exo 2',sans-serif; -webkit-font-smoothing:antialiased; }
 
 /* ── LOGIN ──────────────────────────────────────────── */
-#loginScreen{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; background:linear-gradient(160deg,#fde6cf 0%,#fff4ec 55%,#fbd2a8 100%); }
+#loginScreen{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; background:linear-gradient(160deg,#d8ecdc 0%,#eef3fc 60%,#d0e8d8 100%); }
 .login-box{ background:var(--s1); border:1px solid var(--bdr2); border-radius:18px; padding:36px 28px; max-width:400px; width:100%; box-shadow:var(--shadow2); }
-.login-brand{ font-family:'Oswald',sans-serif; font-size:30px; font-weight:700; letter-spacing:1.5px; color:#c1440e; margin-bottom:4px; text-align:center; }
+.login-brand{ font-family:'Oswald',sans-serif; font-size:30px; font-weight:700; letter-spacing:1.5px; color:var(--ink2); margin-bottom:4px; text-align:center; }
 .login-sub{ text-align:center; font-size:13px; color:var(--muted); margin-bottom:24px; letter-spacing:.5px; }
 .login-form{ display:flex; flex-direction:column; gap:14px; }
 .login-divider{ text-align:center; font-size:11px; color:var(--dim); }
@@ -3840,14 +3887,20 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
 .ovx{ overflow-x:auto;-webkit-overflow-scrolling:touch; }
 @keyframes blink{ 0%,100%{opacity:1}50%{opacity:.4} }
 
-/* ── Mode TV / Écran ── */
-#pageTV{ position:fixed; inset:0; z-index:200; background:radial-gradient(ellipse at top,#2a1204 0%,#1a0c04 55%,#100600 100%); color:#fff; display:none; flex-direction:column; overflow:hidden; }
+/* ── MODE ÉCRAN (diffusion sur écran externe) ─────────────────────────── */
+body.tv-mode .hdr,
+body.tv-mode .spec-nav,
+body.tv-mode .steps,
+body.tv-mode .hdr-drawer,
+body.tv-mode .hdr-drawer-overlay{ display:none!important; }
+
+#pageTV{ position:fixed; inset:0; z-index:200; background:radial-gradient(ellipse at top,#0f2a18 0%,#081a10 55%,#04100a 100%); color:#fff; display:none; flex-direction:column; overflow:hidden; }
 #pageTV.active{ display:flex; }
 
 .tv-hdr{ display:flex; align-items:center; gap:18px; padding:clamp(10px,2vh,22px) clamp(16px,3vw,40px); border-bottom:2px solid rgba(255,255,255,.12); flex-wrap:wrap; flex-shrink:0; }
 .tv-brand{ font-family:'Oswald',sans-serif; font-weight:700; letter-spacing:1px; font-size:clamp(18px,2.4vw,30px); }
 .tv-phase-badge{ background:rgba(255,255,255,.1); border:1px solid rgba(255,255,255,.25); border-radius:30px; padding:6px 16px; font-size:clamp(12px,1.3vw,16px); font-family:'Oswald',sans-serif; letter-spacing:.6px; }
-.tv-clock{ margin-left:auto; font-family:'Oswald',sans-serif; font-size:clamp(20px,2.6vw,34px); font-weight:700; font-variant-numeric:tabular-nums; color:#ffb066; }
+.tv-clock{ margin-left:auto; font-family:'Oswald',sans-serif; font-size:clamp(20px,2.6vw,34px); font-weight:700; font-variant-numeric:tabular-nums; color:#7affa0; }
 
 .tv-sub-ttl{ text-align:center; font-family:'Oswald',sans-serif; font-size:clamp(20px,3vw,40px); letter-spacing:1px; color:#ffd27a; padding:clamp(10px,2vh,18px) 0 4px; flex-shrink:0; }
 
@@ -3862,7 +3915,7 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
 .tv-match-row{ background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.14); border-radius:14px; padding:14px 18px; }
 .tv-match-row.tv-match-live{ border-color:#ff6b5e; background:rgba(255,80,60,.12); box-shadow:0 0 0 1px rgba(255,80,60,.4); }
 .tv-match-meta{ font-size:clamp(11px,1.1vw,14px); color:rgba(255,255,255,.6); margin-bottom:6px; display:flex; justify-content:space-between; gap:8px; }
-.tv-match-time{ color:#ffa860; font-weight:700; }
+.tv-match-time{ color:#7ab8ff; font-weight:700; }
 .tv-match-teams{ display:flex; align-items:center; gap:10px; }
 .tv-team{ flex:1; font-family:'Oswald',sans-serif; font-weight:700; font-size:clamp(15px,1.8vw,22px); }
 .tv-team-r{ text-align:right; }
@@ -3878,8 +3931,8 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
 .tv-stbl th:nth-child(2){ text-align:left; }
 .tv-stbl td{ padding:7px 10px; text-align:center; border-top:1px solid rgba(255,255,255,.08); }
 .tv-stbl .tv-team-name{ text-align:left; font-weight:600; }
-.tv-row-top td{ background:rgba(255,176,102,.10); }
-.tv-pts{ font-weight:700; color:#ffb066; }
+.tv-row-top td{ background:rgba(122,255,160,.08); }
+.tv-pts{ font-weight:700; color:#7affa0; }
 
 .tv-final-tbl{ width:100%; max-width:760px; margin:0 auto; border-collapse:collapse; font-size:clamp(14px,1.8vw,22px); }
 .tv-final-tbl th{ padding:10px; color:rgba(255,255,255,.5); text-transform:uppercase; font-size:clamp(10px,1.1vw,13px); }
@@ -3890,16 +3943,11 @@ input[type=checkbox]{ width:auto;margin-right:6px; }
 .tv-bar{ position:fixed; left:0; right:0; bottom:0; z-index:210; background:rgba(0,0,0,.78); backdrop-filter:blur(6px); display:flex; align-items:center; gap:14px; padding:10px 18px; flex-wrap:wrap; border-top:1px solid rgba(255,255,255,.15); }
 .tv-bar label{ color:rgba(255,255,255,.65); font-size:12px; display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; font-weight:400; }
 .tv-bar select, .tv-bar input{ background:rgba(255,255,255,.1); color:#fff; border:1px solid rgba(255,255,255,.3); border-radius:6px; padding:6px 10px; font-size:13px; }
-.tv-bar select option{ background:#2a1204; color:#fff; }
+.tv-bar select option{ background:#0f2a18; color:#fff; }
 .tv-bar button{ padding:7px 14px; border-radius:8px; border:1px solid rgba(255,255,255,.3); background:rgba(255,255,255,.08); color:#fff; font-family:'Oswald',sans-serif; font-size:13px; cursor:pointer; letter-spacing:.4px; }
 .tv-bar button:hover{ background:rgba(255,255,255,.2); }
 .tv-show-tab{ position:fixed; right:14px; bottom:14px; z-index:210; width:42px; height:42px; border-radius:50%; background:rgba(0,0,0,.6); border:1px solid rgba(255,255,255,.3); color:#fff; align-items:center; justify-content:center; cursor:pointer; font-size:17px; display:none; }
-
-body.tv-mode .hdr,
-body.tv-mode .spec-nav,
-body.tv-mode .steps,
-body.tv-mode .hdr-drawer,
-body.tv-mode .hdr-drawer-overlay{ display:none!important; }
+@keyframes blink{ 0%,100%{opacity:1}50%{opacity:.4} }
 
 @media print{
   body{ background:#fff!important;color:#000!important;font-size:11px; }
@@ -3917,32 +3965,30 @@ body.tv-mode .hdr-drawer-overlay{ display:none!important; }
      ══════════════════════════════════════════════════════ -->
 <div id="loginScreen">
   <div class="login-box">
-    <div class="login-brand">⚽ Vétérans UST</div>
-    <div class="login-sub">Tournoi Vétérans UST · 20 équipes</div>
+    <div class="login-brand">⚽ Foot Entreprises</div>
+    <div class="login-sub">Challenge Inter-Entreprises · 20 équipes</div>
     <div id="authMsg" style="text-align:center;font-size:13px;min-height:18px;margin-bottom:16px;color:var(--red)"></div>
 
     <!-- ══ ZONE SPECTATEURS ══ -->
-    <div style="background:linear-gradient(135deg,#5a2a04,#9a4a08);border-radius:14px;padding:18px 16px;margin-bottom:18px;border:2px solid rgba(255,170,80,.35)">
-      <div style="font-family:'Oswald',sans-serif;font-size:22px;font-weight:700;letter-spacing:1.5px;color:#ffb066;text-align:center;margin-bottom:4px;text-transform:uppercase">👁 Accès Spectateur</div>
-      <div style="font-size:12px;color:rgba(255,212,170,.75);text-align:center;margin-bottom:14px">Suivez le tournoi en temps réel — sans inscription</div>
+    <div style="background:linear-gradient(135deg,#0d3a1a,#0f5a28);border-radius:14px;padding:18px 16px;margin-bottom:18px;border:2px solid rgba(100,255,150,.3)">
+      <div style="font-family:'Oswald',sans-serif;font-size:22px;font-weight:700;letter-spacing:1.5px;color:#7affa0;text-align:center;margin-bottom:4px;text-transform:uppercase">👁 Accès Spectateur</div>
+      <div style="font-size:12px;color:rgba(180,255,200,.7);text-align:center;margin-bottom:14px">Suivez le tournoi en temps réel — sans inscription</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
-        <button onclick="enterLiveModeAndGo(4)" style="padding:16px 8px;background:linear-gradient(135deg,#c1440e,#e8731a);border:2px solid #ff9a3c;border-radius:10px;color:#fff;font-family:'Oswald',sans-serif;font-size:18px;letter-spacing:.8px;cursor:pointer;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:7px;font-weight:700">
+        <button onclick="enterLiveModeAndGo(4)" style="padding:16px 8px;background:linear-gradient(135deg,#1a6a3a,#159050);border:2px solid #40e090;border-radius:10px;color:#fff;font-family:'Oswald',sans-serif;font-size:18px;letter-spacing:.8px;cursor:pointer;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:7px;font-weight:700">
           <span class="spec-nav-live-dot"></span> LIVE
         </button>
         <button onclick="enterLiveModeAndGo(5)" style="padding:16px 8px;background:linear-gradient(135deg,#4a3200,#8a6010);border:2px solid #d4a030;border-radius:10px;color:#ffd080;font-family:'Oswald',sans-serif;font-size:18px;letter-spacing:.8px;cursor:pointer;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:7px;font-weight:700">
           🏆 CLASSEMENT
         </button>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-        <button onclick="enterLiveModeAndGo('T')" style="padding:13px 8px;background:rgba(255,255,255,.10);border:1.5px solid rgba(255,200,150,.3);border-radius:10px;color:#ffdcb8;font-family:'Oswald',sans-serif;font-size:15px;letter-spacing:.6px;cursor:pointer;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:6px">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <button onclick="enterLiveModeAndGo('T')" style="padding:13px 6px;background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.2);border-radius:10px;color:#c0f8d0;font-family:'Oswald',sans-serif;font-size:14px;letter-spacing:.4px;cursor:pointer;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:5px">
           👥 ÉQUIPES
         </button>
-        <button onclick="enterLiveModeAndGo('R')" style="padding:13px 8px;background:rgba(255,255,255,.10);border:1.5px solid rgba(255,200,150,.3);border-radius:10px;color:#ffdcb8;font-family:'Oswald',sans-serif;font-size:15px;letter-spacing:.6px;cursor:pointer;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:6px">
+        <button onclick="enterLiveModeAndGo('R')" style="padding:13px 6px;background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.2);border-radius:10px;color:#c0f8d0;font-family:'Oswald',sans-serif;font-size:14px;letter-spacing:.4px;cursor:pointer;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:5px">
           📋 RÈGLEMENT
         </button>
-      </div>
-      <div style="margin-top:8px">
-        <button onclick="enterLiveModeAndGo('TV')" style="width:100%;padding:13px 8px;background:rgba(255,255,255,.10);border:1.5px solid rgba(255,200,150,.3);border-radius:10px;color:#ffdcb8;font-family:'Oswald',sans-serif;font-size:15px;letter-spacing:.6px;cursor:pointer;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:6px">
+        <button onclick="enterLiveModeAndGo('TV')" style="padding:13px 6px;background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.2);border-radius:10px;color:#c0f8d0;font-family:'Oswald',sans-serif;font-size:14px;letter-spacing:.4px;cursor:pointer;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:5px">
           📺 ÉCRAN
         </button>
       </div>
@@ -3966,7 +4012,7 @@ body.tv-mode .hdr-drawer-overlay{ display:none!important; }
           <label>Mot de passe</label>
           <input type="password" id="li_pwd" placeholder="••••••••" onkeydown="if(event.key==='Enter')loginEmail()">
         </div>
-        <button class="btn" style="width:100%;justify-content:center;background:#c1440e;color:#fff" onclick="loginEmail()">→ Se connecter</button>
+        <button class="btn btn-g" style="width:100%;justify-content:center" onclick="loginEmail()">→ Se connecter</button>
         <div class="login-divider">ou</div>
         <button class="btn-google" onclick="loginGoogle()">
           <svg width="18" height="18" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 6.29C4.672 4.163 6.656 3.58 9 3.58z"/></svg>
@@ -4038,7 +4084,7 @@ body.tv-mode .hdr-drawer-overlay{ display:none!important; }
 
 <!-- HEADER -->
 <header class="hdr">
-  <div class="hdr-brand">⚽ Vétérans UST</div>
+  <div class="hdr-brand">⚽ Foot Entreprises</div>
   <div class="hdr-user" id="hdrUserName"></div>
   <div class="hdr-r" id="hdrDesktopBtns">
     <button class="hdr-btn" id="ruleBtn" onclick="toggleRules()">📋 Règlement</button>
@@ -4073,6 +4119,7 @@ body.tv-mode .hdr-drawer-overlay{ display:none!important; }
   <div class="flex g8 fw">
     <button class="btn btn-g btn-sm" id="liveToggleBtn" onclick="toggleLiveOpen()">🔴 Live fermé (spectateurs)</button>
     <button class="btn btn-g btn-sm" id="regToggleBtn" onclick="toggleRegistrationsOpen()">🔴 Inscriptions fermées</button>
+    <button class="btn btn-b btn-sm" onclick="toggleAdminPanel();goTo('TV')">📺 Mode Écran (affichage)</button>
     <button class="btn btn-b btn-sm" onclick="toggleUsersPanel()">👥 Gérer le staff</button>
     <button class="btn btn-b btn-sm" id="regPanelBtn" onclick="toggleRegistrationsPanel()">📝 Inscriptions</button>
     <button class="btn btn-b btn-sm" id="refArbitresBtn" onclick="toggleRefereesPanel()">🧑‍⚖️ Gérer les arbitres</button>
@@ -4146,8 +4193,8 @@ body.tv-mode .hdr-drawer-overlay{ display:none!important; }
   </button>
   <button class="spec-nav-btn" data-target="5" onclick="spectatorGoLive(5)">🏆 Classement</button>
   <button class="spec-nav-btn" onclick="spectatorGoLive('T')">👥 Équipes</button>
-  <button class="spec-nav-btn" onclick="toggleRules()">📋 Règlement</button>
   <button class="spec-nav-btn" data-target="TV" onclick="spectatorGoLive('TV')">📺 Écran</button>
+  <button class="spec-nav-btn" onclick="toggleRules()">📋 Règlement</button>
   <button class="spec-nav-btn" onclick="logout()" style="margin-left:auto;color:var(--red)">🔑 Connexion Staff</button>
 </nav>
 
@@ -4403,7 +4450,7 @@ body.tv-mode .hdr-drawer-overlay{ display:none!important; }
     <div class="card" style="margin-top:18px">
       <div class="card-ttl">
         <span>📊 Classements des poules (en direct)</span>
-        <button class="btn btn-b btn-xs" data-role="admin" onclick="buildGroups()">2️⃣ Composer les tableaux (Phase 2)</button>
+        <button class="btn btn-b btn-xs" id="buildGroupsBtn" data-role="admin" onclick="buildGroups()">2️⃣ Composer les tableaux (Phase 2)</button>
       </div>
       <div id="poolStandingsPanel"></div>
     </div>
@@ -4523,7 +4570,7 @@ body.tv-mode .hdr-drawer-overlay{ display:none!important; }
   <div class="rules-section">
     <h4>Article 6 : Phase 1 — Format des Poules</h4>
     <p>Les 20 équipes sont réparties en 4 poules (A, B, C, D) de 5 équipes. Chaque équipe affronte une fois les autres équipes de sa poule.</p>
-    <p>Durée des matches : 1 période unique de 13 minutes.</p>
+    <p>Les matches se déroulent en une seule période unique.</p>
     <p>En cas d'égalité de points à l'issue des matchs de la Phase 1, les critères suivants seront appliqués, dans l'ordre indiqué, pour établir le classement définitif :</p>
     <ul>
       <li>Goal-average particulier (résultat lors de la rencontre directe entre les deux équipes).</li>
@@ -4553,7 +4600,7 @@ body.tv-mode .hdr-drawer-overlay{ display:none!important; }
       <li>Finale : vainqueur de la demi-finale 1 contre vainqueur de la demi-finale 2 — attribue les 2 places hautes du tableau (ex : places 1 et 2 pour le Tableau 1).</li>
       <li>Petite finale : perdant de la demi-finale 1 contre perdant de la demi-finale 2 — attribue les 2 places basses du tableau (ex : places 3 et 4 pour le Tableau 1).</li>
     </ul>
-    <p>Chaque équipe joue donc exactement 2 matches en Phase 2 (1 demi-finale, puis la finale ou la petite finale selon son résultat). Avec les 4 matches de poule de la Phase 1, chaque équipe joue 6 matches au total sur le tournoi. Durée des matches : 1 période unique de 13 minutes.</p>
+    <p>Chaque équipe joue donc exactement 2 matches en Phase 2 (1 demi-finale, puis la finale ou la petite finale selon son résultat). Avec les 4 matches de poule de la Phase 1, chaque équipe joue 6 matches au total sur le tournoi. Les matches se déroulent sur une période unique.</p>
     <p>Le classement final (places 1 à 20) découle directement des résultats des 5 tableaux, sans phase de classement supplémentaire.</p>
   </div>
 
@@ -4574,10 +4621,10 @@ body.tv-mode .hdr-drawer-overlay{ display:none!important; }
 </div>
 </div>
 
-<!-- ══ MODE TV / ÉCRAN ══ -->
+<!-- ══ PAGE ÉCRAN — DIFFUSION SUR ÉCRAN EXTERNE ══ -->
 <div class="page" id="pageTV">
   <div class="tv-hdr">
-    <div class="tv-brand">⚽ Vétérans UST — 20 équipes</div>
+    <div class="tv-brand">⚽ Foot Entreprises</div>
     <div class="tv-phase-badge" id="tvPhaseBadge">—</div>
     <div class="tv-clock" id="tvClock">--:--:--</div>
   </div>
