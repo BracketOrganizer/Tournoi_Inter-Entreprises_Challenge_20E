@@ -313,15 +313,14 @@ onAuthStateChanged(auth, async (user)=>{
     CURRENT_USER = null; USER_ROLE = null; MANAGER_TEAM_ID = null; MANAGER_EXTRA_TEAM_IDS = []; MANAGER_VIEW_TEAM_ID = null; MANAGER_PENDING_REQUEST = null;
     unsubAll();
     try {
-      const snap = await getDoc(doc(db,'foottournoi20','current'));
+      const snap = await getDoc(doc(db,'foottournoi20','status'));
       if(snap.exists()){
         const d = snap.data();
         ST.liveOpen = d.liveOpen === true;
-        const n = (d.cfg && d.cfg.n) || 20;
-        const slotsLeft = Math.max(0, n - ((d.teams||[]).length));
-        handleRegStatusChange(d.registrationsOpen === true, slotsLeft);
+        handleRegStatusChange(d.registrationsOpen === true, d.slotsLeft);
       }
     } catch(e){}
+    startLiveWatch();
     showLogin();
   }
 });
@@ -410,13 +409,30 @@ function subscribeToTournament(){
     ST.clubOverrides = sanitizeClubOverrides(data.clubOverrides);
     ST.liveOpen = data.liveOpen === true;
     ST.registrationsOpen = data.registrationsOpen === true;
+    updateLiveToggleBtn();
     updateRegOpenBtn();
     refreshCurrentPage();
   });
 }
 async function saveTournament(partial){
   if(!isAdmin() && !isScorer()) return;
-  try { await setDoc(doc(db,'foottournoi20','current'), { ...partial, updatedAt: serverTimestamp() }, { merge:true }); }
+  try {
+    await setDoc(doc(db,'foottournoi20','current'), { ...partial, updatedAt: serverTimestamp() }, { merge:true });
+    // 'current' devient illisible pour un visiteur non connecté dès que
+    // liveOpen=false (règle Firestore). On duplique donc liveOpen et l'état
+    // des inscriptions dans foottournoi20/status, document toujours lisible
+    // publiquement, pour que l'écran de connexion reste fonctionnel.
+    if('liveOpen' in partial){
+      await setDoc(doc(db,'foottournoi20','status'), { liveOpen: partial.liveOpen }, { merge:true });
+    }
+    if('registrationsOpen' in partial || 'teams' in partial || 'cfg' in partial){
+      const slotsLeft = Math.max(0, (ST.cfg.n||20) - (ST.teams||[]).length);
+      await setDoc(doc(db,'foottournoi20','status'), {
+        registrationsOpen: ST.registrationsOpen === true,
+        slotsLeft
+      }, { merge:true });
+    }
+  }
   catch(e){ console.error('saveTournament', e); alert('Erreur de sauvegarde : '+e.message); }
 }
 function refreshCurrentPage(){
@@ -1047,6 +1063,9 @@ function showApp(){
 // ══════════════════════════════════════════════════════════
 // INSCRIPTION EN LIGNE DES ÉQUIPES
 // ══════════════════════════════════════════════════════════
+// État public des inscriptions (lu depuis foottournoi20/status, toujours
+// lisible même sans connexion — 'current' lui est bloqué par les règles
+// Firestore tant que liveOpen n'est pas true).
 let PUBLIC_REG_OPEN = false;
 let PUBLIC_REG_SLOTS = 0;
 function handleRegStatusChange(open, slots){
@@ -1062,6 +1081,43 @@ function updateRegButtonOnLogin(){
   const full = document.getElementById('regFullNotice');
   if(full) full.style.display = (PUBLIC_REG_OPEN && PUBLIC_REG_SLOTS<=0) ? '' : 'none';
 }
+
+// ══════════════════════════════════════════════════════════
+// SUIVI LIVE PUBLIC — écoute foottournoi20/status (toujours lisible, même
+// sans connexion) pour tenir à jour en temps réel le bouton "Live" du
+// panneau admin et le bouton "S'inscrire" de l'écran de connexion, y
+// compris quand foottournoi20/current devient illisible (liveOpen=false).
+// ══════════════════════════════════════════════════════════
+let unsubLiveWatch = null;
+let liveWatchIv = null; // polling de secours (mobile en veille)
+function startLiveWatch(){
+  if(unsubLiveWatch) return; // déjà actif
+  unsubLiveWatch = onSnapshot(doc(db,'foottournoi20','status'), (snap)=>{
+    if(!snap.exists()) return;
+    const d = snap.data();
+    ST.liveOpen = d.liveOpen === true;
+    updateLiveToggleBtn();
+    handleRegStatusChange(d.registrationsOpen === true, d.slotsLeft);
+  }, (e)=>{ console.warn('startLiveWatch', e); });
+  if(!liveWatchIv){
+    liveWatchIv = setInterval(async ()=>{
+      try {
+        const snap = await getDoc(doc(db,'foottournoi20','status'));
+        if(snap.exists()){
+          const d = snap.data();
+          ST.liveOpen = d.liveOpen === true;
+          updateLiveToggleBtn();
+          handleRegStatusChange(d.registrationsOpen === true, d.slotsLeft);
+        }
+      } catch(e){ /* silencieux : réseau indisponible */ }
+    }, 4000);
+  }
+}
+function stopLiveWatch(){
+  if(unsubLiveWatch){ unsubLiveWatch(); unsubLiveWatch=null; }
+  if(liveWatchIv){ clearInterval(liveWatchIv); liveWatchIv=null; }
+}
+startLiveWatch();
 
 window.openRegForm = function(){
   const m = document.getElementById('regFormModal');
