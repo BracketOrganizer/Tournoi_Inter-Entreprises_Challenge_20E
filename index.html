@@ -2,8 +2,8 @@
 <html lang="fr">
 <head>
 <script>
-  if(!sessionStorage.getItem('_reloaded')){
-    sessionStorage.setItem('_reloaded','1');
+  if(!sessionStorage.getItem('_reloaded_chal20')){
+    sessionStorage.setItem('_reloaded_chal20','1');
     location.reload(true);
   }
 </script>
@@ -596,7 +596,7 @@ document.addEventListener('visibilitychange', ()=>{
 });
 
 // ══════════════════════════════════════════════════════════
-// PERSISTANCE FIRESTORE — doc unique 'foottournoi/current'
+// PERSISTANCE FIRESTORE — doc unique 'foottournoi20/current'
 // ══════════════════════════════════════════════════════════
 function subscribeToTournament(){
   if(!unsubLiveWatch || !liveWatchIv) startLiveWatch();
@@ -708,7 +708,7 @@ function refreshCurrentPage(){
 
 
 // ══════════════════════════════════════════════════════════
-// FEUILLES D'ÉQUIPE (ROSTERS) — sous-collection 'teamRosters/{teamId}'
+// FEUILLES D'ÉQUIPE (ROSTERS) — sous-collection 'teamRosters20/{teamId}'
 // Gérée par le responsable d'équipe (manager) pour SA propre équipe,
 // ou par l'admin pour n'importe quelle équipe (vue/édition libre).
 // Structure : { players:[{nom,prenom,licence}], updatedAt }
@@ -753,7 +753,7 @@ async function saveRoster(teamId, players, referees){
   try {
     const data = { players, updatedAt: serverTimestamp() };
     if(Array.isArray(referees)) data.referees = referees; // arbitres de l'équipe (arbitrage tournant)
-    await setDoc(doc(db,'teamRosters',teamId), data, { merge:true });
+    await setDoc(doc(db,'teamRosters20',teamId), data, { merge:true });
     ROSTERS[teamId] = { ...(ROSTERS[teamId]||{}), players, ...(Array.isArray(referees) ? { referees } : {}) };
   } catch(e){
     console.error('saveRoster', e);
@@ -2114,8 +2114,8 @@ window.submitManualRegistration = async function(){
     await saveTournament({ teams: ST.teams });
     const warn = [];
     for(const t of newTeams){
-      try { await setDoc(doc(db,'teamRosters',t.id), { players: [], updatedAt: serverTimestamp() }); }
-      catch(e){ console.warn('teamRosters', e); warn.push(t.name); }
+      try { await setDoc(doc(db,'teamRosters20',t.id), { players: [], updatedAt: serverTimestamp() }); }
+      catch(e){ console.warn('teamRosters20', e); warn.push(t.name); }
     }
     let html = `✅ ${newTeams.length} équipe${newTeams.length>1?'s':''} inscrite${newTeams.length>1?'s':''} pour <b>${regEsc(club)}</b> : ${newTeams.map(t=>regEsc(t.name)).join(' · ')}.`;
     if(warn.length) html += `<br>⚠️ Feuille d'équipe non initialisée pour : ${warn.map(regEsc).join(', ')} (l'admin pourra la créer plus tard).`;
@@ -2181,7 +2181,7 @@ window.approveExtraTeamRequest = async function(uid){
     ST.teams.push({ id, name: u.pendingExtraTeamRequest.name, club, respNom: u.name, respTel: u.phone, respEmail: u.email });
     await saveTournament({ teams: ST.teams });
     try { await setDoc(doc(db,'teamRosters20',id), { players: [], updatedAt: serverTimestamp() }); }
-    catch(e){ console.warn('Création teamRosters (2e équipe) échouée (non bloquant)', e); }
+    catch(e){ console.warn('Création teamRosters20 (2e équipe) échouée (non bloquant)', e); }
     const extraTeamIds = [...(u.extraTeamIds||[]), id];
     await updateDoc(doc(db,'users',uid), { extraTeamIds, pendingExtraTeamRequest: null });
     renderTeamsPage();
@@ -2229,8 +2229,8 @@ window.approveRegistration = async function(uid){
     ST.teams.push(...newTeams);
     await saveTournament({ teams: ST.teams });
     for(const t of newTeams){
-      try { await setDoc(doc(db,'teamRosters',t.id), { players: [], updatedAt: serverTimestamp() }); }
-      catch(e){ console.warn('Création teamRosters (inscription) échouée (non bloquant)', e); }
+      try { await setDoc(doc(db,'teamRosters20',t.id), { players: [], updatedAt: serverTimestamp() }); }
+      catch(e){ console.warn('Création teamRosters20 (inscription) échouée (non bloquant)', e); }
     }
     await updateDoc(doc(db,'users',uid), { role:'manager', teamId:newTeams[0].id, extraTeamIds:newTeams.slice(1).map(t=>t.id), tournament:'foot20', regStatus:'approved' });
     renderTeamsPage();
@@ -2433,8 +2433,7 @@ function updateRefereesBtnVisibility(){ try{ updateRefProgBtn(); }catch(e){}
   }
 }
 
-// Cette appli partage la collection Firestore 'foottournoi20' avec l'appli
-// "Vétérans 20 équipes" (même doc 'current') : on valide/nettoie donc
+// Les données Firestore peuvent contenir des champs inattendus : on valide/nettoie donc
 // systématiquement la forme des données avant de les utiliser, pour éviter
 // tout plantage si un champ inattendu s'y retrouve.
 function sanitizeRefereeAssignments(ra){
@@ -3518,11 +3517,11 @@ window.addTeam = async function(){
   const id = 't_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
   ST.teams.push({ id, name, club});
   await saveTournament({ teams: ST.teams });
-  // Crée le doc teamRosters vide associé : nécessaire pour que le futur responsable
+  // Crée le doc teamRosters20 vide associé : nécessaire pour que le futur responsable
   // d'équipe (manager) puisse ensuite faire un update (et non un create, qui lui
   // est interdit par les règles Firestore) lors de sa 1ère sauvegarde de joueurs.
   try { await setDoc(doc(db,'teamRosters20',id), { players: [], updatedAt: serverTimestamp() }); }
-  catch(e){ console.warn('Création teamRosters initiale échouée (non bloquant)', e); }
+  catch(e){ console.warn('Création teamRosters20 initiale échouée (non bloquant)', e); }
   ['t_name','t_club'].forEach(fid=>{ const el=document.getElementById(fid); if(el) el.value=''; });
   renderTeamsPage();
 };
@@ -3553,9 +3552,9 @@ window.autoFillTeams = async function(){
     ST.teams.push({ id:'t_auto_'+i, name: ent, club: ent });
   }
   await saveTournament({ teams: ST.teams });
-  // Crée les docs teamRosters vides associés (cf. note dans addTeam()).
+  // Crée les docs teamRosters20 vides associés (cf. note dans addTeam()).
   try { await Promise.all(ST.teams.map(t=>setDoc(doc(db,'teamRosters20',t.id), { players: [], updatedAt: serverTimestamp() }))); }
-  catch(e){ console.warn('Création teamRosters en lot échouée (non bloquant)', e); }
+  catch(e){ console.warn('Création teamRosters20 en lot échouée (non bloquant)', e); }
   renderTeamsPage();
 };
 
@@ -4125,7 +4124,7 @@ function renderGroupStandingsPanel(){
 // ══════════════════════════════════════════════════════════
 function getTVSettings(){
   let saved = {};
-  try { saved = JSON.parse(localStorage.getItem('tvSettings')||'{}'); } catch(e){}
+  try { saved = JSON.parse(localStorage.getItem('tvSettings_chal20')||'{}'); } catch(e){}
   return {
     mode:              saved.mode              || 'cycle', // 'results' | 'standings' | 'cycle'
     intervalMatches:   saved.intervalMatches    || 12,       // secondes d'affichage des écrans "matchs"
@@ -4136,7 +4135,7 @@ function getTVSettings(){
 }
 function saveTVSettings(patch){
   const next = { ...getTVSettings(), ...patch };
-  try { localStorage.setItem('tvSettings', JSON.stringify(next)); } catch(e){}
+  try { localStorage.setItem('tvSettings_chal20', JSON.stringify(next)); } catch(e){}
   return next;
 }
 
